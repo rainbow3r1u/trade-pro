@@ -157,6 +157,7 @@
     <a class="tab {% if current_view == 'strategy1_pro' %}active{% endif %}" href="/?view=strategy1_pro">稳步抬升 PRO <span style="font-size:10px;background:#f0883e;color:#fff;padding:2px 4px;border-radius:4px;margin-left:4px;">NEW</span></a>
     <a class="tab {% if current_view == 'arc_bottom' %}active{% endif %}" href="/?view=arc_bottom">圆弧底突破 <span style="font-size:10px;background:#d29922;color:#fff;padding:2px 4px;border-radius:4px;margin-left:4px;">NEW</span></a>
     <a class="tab {% if current_view == 'surge_filter' %}active{% endif %}" href="/?view=surge_filter">1h涨幅3-10% <span style="font-size:10px;background:#a371f7;color:#fff;padding:2px 4px;border-radius:4px;margin-left:4px;">NEW</span></a>
+    <a class="tab {% if current_view == 'volume_surge' %}active{% endif %}" href="/?view=volume_surge">成交量异动 <span style="font-size:10px;background:#ff6b6b;color:#fff;padding:2px 4px;border-radius:4px;margin-left:4px;">NEW</span></a>
     <a class="tab" href="/scanner">Scanner <span style="font-size:10px;background:#58a6ff;color:#fff;padding:2px 4px;border-radius:4px;margin-left:4px;">NEW</span></a>
     {% for s in strategies %}
     <a class="tab {% if current_view == s.name %}active{% endif %}" href="/?view={{s.name}}">{{s.title or s.name}}</a>
@@ -354,6 +355,156 @@ fetch('/api/surge_filter')
     .catch(err => {
         document.getElementById('surgeFilterBody').innerHTML = '<tr><td colspan="5" style="text-align:center;color:#f85149;">请求失败</td></tr>';
     });
+</script>
+{% endif %}
+
+<!-- 成交量异动视图 -->
+{% if current_view == 'volume_surge' %}
+<div class="report-card" style="margin:14px 20px 12px;">
+    <div class="report-title">成交量异动</div>
+    <div class="report-meta">筛选条件: 成交额排名 + 月涨幅≤100% + 1h涨幅范围（排除BTC、ETH）</div>
+    
+    <!-- 参数选择区域 -->
+    <div class="filter-bar" style="margin: 15px 0; padding: 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px;">
+        <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items: center;">
+            <div>
+                <label style="color: #8b949e; font-size: 12px; margin-right: 8px;">涨幅范围:</label>
+                <select id="gainRange" style="background: #161b22; border: 1px solid #30363d; color: #e6edf3; padding: 6px 10px; border-radius: 6px; font-size: 13px;">
+                    <option value="0-3">0% - 3%</option>
+                    <option value="1-5">1% - 5%</option>
+                    <option value="2-8">2% - 8%</option>
+                    <option value="3-10" selected>3% - 10%</option>
+                    <option value="5-15">5% - 15%</option>
+                    <option value="8-20">8% - 20%</option>
+                    <option value="10-30">10% - 30%</option>
+                    <option value="15-50">15% - 50%</option>
+                    <option value="20-100">20% - 100%</option>
+                </select>
+            </div>
+
+            <div>
+                <label style="color: #8b949e; font-size: 12px; margin-right: 8px;">成交额排名:</label>
+                <select id="volumeRank" style="background: #161b22; border: 1px solid #30363d; color: #e6edf3; padding: 6px 10px; border-radius: 6px; font-size: 13px;">
+                    <option value="0.01">前1%</option>
+                    <option value="0.02">前2%</option>
+                    <option value="0.03">前3%</option>
+                    <option value="0.05">前5%</option>
+                    <option value="0.08">前8%</option>
+                    <option value="0.10" selected>前10%</option>
+                    <option value="0.15">前15%</option>
+                    <option value="0.20">前20%</option>
+                    <option value="0.30">前30%</option>
+                    <option value="0.50">前50%</option>
+                    <option value="0.80">前80%</option>
+                </select>
+            </div>
+            
+            <button onclick="runVolumeSurgeScan()" style="background: #238636; color: #fff; padding: 6px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;">
+                开始扫描
+            </button>
+        </div>
+    </div>
+    
+    <!-- 扫描状态 -->
+    <div id="scanStatus" style="color: #8b949e; margin: 10px 0; font-size: 13px;">点击"开始扫描"按钮执行筛选</div>
+    
+    <!-- 统计信息 -->
+    <div id="scanStats" style="display: none; margin: 10px 0; padding: 10px; background: #161b22; border-radius: 6px; font-size: 12px; color: #8b949e;"></div>
+    
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>币种</th>
+                    <th>价格</th>
+                    <th>1h涨幅</th>
+                    <th>24h成交额</th>
+                    <th>月涨幅</th>
+                    <th>时间</th>
+                </tr>
+            </thead>
+            <tbody id="volumeSurgeBody">
+                <tr><td colspan="6" style="text-align:center;color:#8b949e;">等待扫描...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+function runVolumeSurgeScan() {
+    const gainRange = document.getElementById('gainRange').value;
+    const volumeRank = document.getElementById('volumeRank').value;
+    
+    const [minGain, maxGain] = gainRange.split('-').map(v => parseInt(v) / 100);
+    const volumePct = parseFloat(volumeRank);
+    
+    document.getElementById('scanStatus').innerHTML = '<span style="color: #58a6ff;">🔄 扫描中...</span>';
+    document.getElementById('scanStats').style.display = 'none';
+    document.getElementById('volumeSurgeBody').innerHTML = '<tr><td colspan="6" style="text-align:center;color:#8b949e;">扫描中...</td></tr>';
+    
+    fetch('/api/volume_surge', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            min_gain: minGain,
+            max_gain: maxGain,
+            volume_pct: volumePct
+        })
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.code === 0) {
+            const items = res.data.items || [];
+            const summary = res.data.summary || {};
+            const checkStats = summary.check_stats || {};
+            
+            document.getElementById('scanStatus').innerHTML = 
+                `<span style="color: #7ee787;">✅ 扫描完成，找到 ${items.length} 个符合条件的币种</span>`;
+            
+            // 显示统计信息
+            const statsDiv = document.getElementById('scanStats');
+            statsDiv.innerHTML = `
+                <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                    <span>成交额前${(volumePct*100).toFixed(0)}%: <strong style="color: #e6edf3;">${checkStats.step1 || 0}</strong> 个</span>
+                    <span>月涨幅≤100%: <strong style="color: #e6edf3;">${checkStats.step2 || 0}</strong> 个</span>
+                    <span>1h涨幅${(minGain*100).toFixed(0)}%-${(maxGain*100).toFixed(0)}%: <strong style="color: #7ee787;">${items.length}</strong> 个</span>
+                </div>
+            `;
+            statsDiv.style.display = 'block';
+            
+            const tbody = document.getElementById('volumeSurgeBody');
+            if (items.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#8b949e;">暂无符合条件的币种</td></tr>';
+            } else {
+                tbody.innerHTML = items.map(item => {
+                    const monthlyGain = item.monthly_gain !== null && item.monthly_gain !== undefined ? item.monthly_gain + '%' : '-';
+                    return `
+                    <tr>
+                        <td><a class="sym-link" href="https://www.binance.com/zh-CN/futures/${item.symbol}" target="_blank">${item.symbol}</a></td>
+                        <td>${item.price}</td>
+                        <td class="positive">${item.gain_1h}%</td>
+                        <td>${(item.vol_24h / 1000000).toFixed(2)}M</td>
+                        <td>${monthlyGain}</td>
+                        <td>${item.time}</td>
+                    </tr>
+                `}).join('');
+            }
+        } else {
+            document.getElementById('scanStatus').innerHTML = 
+                `<span style="color: #f85149;">❌ 扫描失败: ${res.msg}</span>`;
+            document.getElementById('scanStats').style.display = 'none';
+            document.getElementById('volumeSurgeBody').innerHTML = 
+                `<tr><td colspan="6" style="text-align:center;color:#f85149;">扫描失败: ${res.msg}</td></tr>`;
+        }
+    })
+    .catch(err => {
+        document.getElementById('scanStatus').innerHTML = 
+            `<span style="color: #f85149;">❌ 请求失败: ${err}</span>`;
+        document.getElementById('scanStats').style.display = 'none';
+        document.getElementById('volumeSurgeBody').innerHTML = 
+            '<tr><td colspan="6" style="text-align:center;color:#f85149;">请求失败</td></tr>';
+    });
+}
 </script>
 {% endif %}
 

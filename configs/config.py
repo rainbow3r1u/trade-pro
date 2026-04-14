@@ -28,6 +28,7 @@ COS_REGION = os.environ.get('COS_REGION', 'ap-seoul')
 COS_BUCKET = os.environ.get('COS_BUCKET', '')
 COS_ENDPOINT = os.environ.get('COS_ENDPOINT', 'cos.ap-seoul.myqcloud.com')
 COS_KEY = os.environ.get('COS_KEY', 'klines/futures_latest.parquet')
+COS_MONTHLY_KEY_PREFIX = os.environ.get('COS_MONTHLY_KEY_PREFIX', 'klines/monthly')
 
 # 飞书
 FEISHU_APP_ID = os.environ.get('FEISHU_APP_ID', '')

@@ -141,7 +141,7 @@ def get_latest_report(strategy_name: str) -> Dict[str, Any]:
 def get_all_reports() -> List[Dict[str, Any]]:
     # 复用 get_latest_report 的缓存，避免读取和遍历所有历史文件
     reports = []
-    strategies = ['strategy1', 'strategy1_pro', 'arc_bottom', 'surge_filter']
+    strategies = ['strategy1', 'strategy1_pro', 'arc_bottom', 'surge_filter', 'volume_surge']
     for st in strategies:
         data = get_latest_report(st)
         if data:
@@ -268,15 +268,16 @@ def health():
 
 @app.route('/api/<strategy>')
 def api_strategy(strategy):
-    if strategy not in ['strategy1', 'strategy1_pro', 'arc_bottom', 'surge_filter']:
+    if strategy not in ['strategy1', 'strategy1_pro', 'arc_bottom', 'surge_filter', 'volume_surge']:
         return jsonify({'code': 1, 'msg': '无效的策略'})
-        
+
     try:
         file_map = {
             'strategy1': '/var/www/all_signals.json',
             'strategy1_pro': '/var/www/all_signals_pro.json',
             'arc_bottom': '/var/www/all_signals_arc.json',
-            'surge_filter': '/var/www/all_signals_surge.json'
+            'surge_filter': '/var/www/all_signals_surge.json',
+            'volume_surge': '/var/www/volume_surge.json'
         }
         signal_file = file_map.get(strategy)
         if not os.path.exists(signal_file):
@@ -284,7 +285,8 @@ def api_strategy(strategy):
                 'strategy1': 'all_signals.json',
                 'strategy1_pro': 'all_signals_pro.json',
                 'arc_bottom': 'all_signals_arc.json',
-                'surge_filter': 'all_signals_surge.json'
+                'surge_filter': 'all_signals_surge.json',
+                'volume_surge': 'volume_surge.json'
             }
             signal_file = str(config.DATA_DIR / fallback_map.get(strategy))
 
@@ -295,6 +297,38 @@ def api_strategy(strategy):
         else:
             return jsonify({'code': 1, 'msg': '信号文件不存在，请先运行扫描脚本'})
     except Exception as e:
+        return jsonify({'code': 1, 'msg': str(e)})
+
+
+@app.route('/api/volume_surge', methods=['POST'])
+def api_volume_surge():
+    """成交量异动策略 - 实时扫描接口"""
+    try:
+        from strategies.volume_surge import VolumeSurgeStrategy
+        
+        # 获取参数
+        data = request.get_json() or {}
+        min_gain = data.get('min_gain', 0.03)
+        max_gain = data.get('max_gain', 0.10)
+        volume_pct = data.get('volume_pct', 0.10)
+        
+        logger.info(f"成交量异动扫描请求: 涨幅{min_gain*100:.0f}%-{max_gain*100:.0f}%, 成交额前{volume_pct*100:.0f}%")
+        
+        # 创建策略实例
+        strategy = VolumeSurgeStrategy(
+            min_gain_1h=min_gain,
+            max_gain_1h=max_gain,
+            volume_top_pct=volume_pct
+        )
+        
+        # 执行扫描
+        result = strategy.scan()
+        
+        logger.info(f"成交量异动扫描完成: 找到 {len(result.get('items', []))} 个信号")
+        
+        return jsonify({'code': 0, 'data': result})
+    except Exception as e:
+        logger.error(f"成交量异动扫描失败: {e}")
         return jsonify({'code': 1, 'msg': str(e)})
 
 
