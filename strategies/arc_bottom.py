@@ -1,5 +1,8 @@
+import json as _json
+import os
 import pandas as pd
 from datetime import datetime, timezone
+from pathlib import Path
 from .base import BaseStrategy
 
 class ArcBottomStrategy(BaseStrategy):
@@ -121,6 +124,37 @@ class ArcBottomStrategy(BaseStrategy):
             'box_amp': (max(high_arr[-PARAMS['box_min_bars']:]) - min(low_arr[-PARAMS['box_min_bars']:])) / min(low_arr[-PARAMS['box_min_bars']:]),
             'vol': sum(quote_vol_arr[-PARAMS['right_bull_bars']:])
         }
+
+    def run(self, generate_charts: bool = False, save_to_db: bool = False):
+        self.logger.info(f"{'='*60}")
+        self.logger.info(f"{self.strategy_name} 扫描开始")
+        self.logger.info(f"{'='*60}")
+        
+        if self.df is None:
+            self.load_data()
+        
+        scan_result = self.scan()
+        items = scan_result['items']
+        
+        if generate_charts and items:
+            symbols = [item.get('symbol', '') for item in items if item.get('symbol')]
+            self.generate_charts(symbols)
+        
+        report = self.create_report(items, all_symbols_bars=scan_result.get('all_symbols_bars'))
+        self.save_report(report, save_to_db=save_to_db)
+        
+        output_path = Path(os.environ.get('NGINX_WWW_DIR', '/var/www')) / f'{self.strategy_id}.json'
+        output_path.parent.mkdir(exist_ok=True, parents=True)
+        save_data = {
+            'items': items,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'summary': report.summary
+        }
+        with open(output_path, 'w', encoding='utf-8') as f:
+            _json.dump(save_data, f, ensure_ascii=False, indent=2)
+        
+        self.logger.info(f"找到 {len(items)} 个符合条件的币")
+        return report
 
     def create_report(self, items: list, all_symbols_bars: list = None, **kwargs):
         from models.signal import StrategyReport

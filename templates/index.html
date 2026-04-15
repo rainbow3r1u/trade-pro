@@ -158,6 +158,7 @@
     <a class="tab {% if current_view == 'arc_bottom' %}active{% endif %}" href="/?view=arc_bottom">圆弧底突破 <span style="font-size:10px;background:#d29922;color:#fff;padding:2px 4px;border-radius:4px;margin-left:4px;">NEW</span></a>
     <a class="tab {% if current_view == 'surge_filter' %}active{% endif %}" href="/?view=surge_filter">1h涨幅3-10% <span style="font-size:10px;background:#a371f7;color:#fff;padding:2px 4px;border-radius:4px;margin-left:4px;">NEW</span></a>
     <a class="tab {% if current_view == 'volume_surge' %}active{% endif %}" href="/?view=volume_surge">成交量异动 <span style="font-size:10px;background:#ff6b6b;color:#fff;padding:2px 4px;border-radius:4px;margin-left:4px;">NEW</span></a>
+    <a class="tab {% if current_view == 'volume_advanced' %}active{% endif %}" href="/?view=volume_advanced">成交量进阶 <span style="font-size:10px;background:#3fb950;color:#fff;padding:2px 4px;border-radius:4px;margin-left:4px;">PRO</span></a>
     <a class="tab" href="/scanner">Scanner <span style="font-size:10px;background:#58a6ff;color:#fff;padding:2px 4px;border-radius:4px;margin-left:4px;">NEW</span></a>
     {% for s in strategies %}
     <a class="tab {% if current_view == s.name %}active{% endif %}" href="/?view={{s.name}}">{{s.title or s.name}}</a>
@@ -503,6 +504,252 @@ function runVolumeSurgeScan() {
         document.getElementById('scanStats').style.display = 'none';
         document.getElementById('volumeSurgeBody').innerHTML = 
             '<tr><td colspan="6" style="text-align:center;color:#f85149;">请求失败</td></tr>';
+    });
+}
+</script>
+{% endif %}
+
+<!-- 成交量进阶视图 -->
+{% if current_view == 'volume_advanced' %}
+<div class="report-card" style="margin:14px 20px 12px;">
+    <div class="report-title">成交量进阶 <span style="font-size:12px;background:#3fb950;color:#fff;padding:2px 6px;border-radius:4px;margin-left:8px;">PRO</span></div>
+    <div class="report-meta">第一步：选择 strategy1_pro 的 step 步骤 | 第二步：确认成交量参数并扫描</div>
+
+    <!-- 第一步：选择 step 步骤 -->
+    <div id="advStep1Panel" style="margin: 15px 0; padding: 15px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px;">
+        <div style="color: #58a6ff; font-size: 14px; font-weight: 500; margin-bottom: 12px;">📋 第一步：选择 strategy1_pro 的 step 步骤</div>
+        <div id="advStepLoading" style="color: #8b949e; font-size: 13px;">正在加载 step 数据...</div>
+        <div id="advStepList" style="display: none;">
+            <div id="advStepInfo" style="color: #8b949e; font-size: 12px; margin-bottom: 10px;"></div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;" id="advStepButtons"></div>
+        </div>
+    </div>
+
+    <!-- 第二步：确认成交量参数 -->
+    <div id="advStep2Panel" style="display: none; margin: 15px 0; padding: 15px; background: #0d1117; border: 1px solid #238636; border-radius: 8px;">
+        <div style="color: #7ee787; font-size: 14px; font-weight: 500; margin-bottom: 12px;">📊 第二步：确认成交量参数并扫描</div>
+        <div id="advSelectedStepInfo" style="color: #8b949e; font-size: 12px; margin-bottom: 10px;"></div>
+
+        <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items: center;">
+            <div>
+                <label style="color: #8b949e; font-size: 12px; margin-right: 8px;">涨幅范围:</label>
+                <select id="advGainRange" style="background: #161b22; border: 1px solid #30363d; color: #e6edf3; padding: 6px 10px; border-radius: 6px; font-size: 13px;">
+                    <option value="0-3">0% - 3%</option>
+                    <option value="1-5" selected>1% - 5%</option>
+                    <option value="2-8">2% - 8%</option>
+                    <option value="3-10">3% - 10%</option>
+                    <option value="5-15">5% - 15%</option>
+                </select>
+            </div>
+
+            <div>
+                <label style="color: #8b949e; font-size: 12px; margin-right: 8px;">成交额排名:</label>
+                <select id="advVolumeRank" style="background: #161b22; border: 1px solid #30363d; color: #e6edf3; padding: 6px 10px; border-radius: 6px; font-size: 13px;">
+                    <option value="0.10">前10%</option>
+                    <option value="0.20">前20%</option>
+                    <option value="0.30">前30%</option>
+                    <option value="0.50" selected>前50%</option>
+                    <option value="0.80">前80%</option>
+                </select>
+            </div>
+
+            <button onclick="runVolumeAdvancedScan()" style="background: #238636; color: #fff; padding: 6px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;">
+                🚀 开始扫描
+            </button>
+            <button onclick="showStep1()" style="background: #30363d; color: #e6edf3; padding: 6px 12px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;">
+                ← 返回
+            </button>
+        </div>
+    </div>
+
+    <!-- 扫描状态 -->
+    <div id="advScanStatus" style="display: none; color: #8b949e; margin: 10px 0; font-size: 13px;"></div>
+
+    <!-- 统计信息 -->
+    <div id="advScanStats" style="display: none; margin: 10px 0; padding: 10px; background: #161b22; border-radius: 6px; font-size: 12px; color: #8b949e;"></div>
+
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>币种</th>
+                    <th>价格</th>
+                    <th>PRO步骤</th>
+                    <th>PRO小时数</th>
+                    <th>1h涨幅</th>
+                    <th>24h成交额(M)</th>
+                    <th>月涨幅</th>
+                </tr>
+            </thead>
+            <tbody id="volumeAdvancedBody">
+                <tr><td colspan="7" style="text-align:center;color:#8b949e;">请先选择 step 步骤</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+// 全局变量存储选中的step
+var advSelectedStep = null;
+var advStepsData = null;
+
+// 页面加载时获取 step 数据
+(function() {
+    loadVolumeAdvancedSteps();
+})();
+
+function loadVolumeAdvancedSteps() {
+    fetch('/api/volume_advanced/steps')
+    .then(r => r.json())
+    .then(res => {
+        if (res.code === 0 && res.data && !res.data.error) {
+            advStepsData = res.data;
+            document.getElementById('advStepLoading').style.display = 'none';
+            document.getElementById('advStepList').style.display = 'block';
+
+            // 显示数据信息
+            document.getElementById('advStepInfo').innerHTML =
+                '📁 数据来源: ' + res.data.file.split('/').pop() + ' | ' +
+                '时间: ' + res.data.timestamp + ' | ' +
+                '最终信号: ' + res.data.total_signals + ' 个';
+
+            // 生成 step 按钮
+            var steps = res.data.steps;
+            var buttonsHtml = '';
+            var stepNames = {
+                'step1': 'Step1 最后1根阳线',
+                'step2': 'Step2 最后2根阳线',
+                'step3': 'Step3 最后3根阳线',
+                'step4': 'Step4 最后4根阳线',
+                'step5': 'Step5 最后5根阳线',
+                'step6': 'Step6 最后6根阳线'
+            };
+            for (var key in steps) {
+                var count = steps[key].count || 0;
+                if (count > 0) {
+                    buttonsHtml += '<button onclick="selectStep(\'' + key + '\')" style="background: #1f6feb; color: #fff; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;">' +
+                        stepNames[key] + ' (' + count + ' 个)</button>';
+                }
+            }
+            if (!buttonsHtml) {
+                buttonsHtml = '<div style="color: #f85149;">当前数据文件中没有可用的 step 数据，请先运行 strategy1_pro 策略。</div>';
+            }
+            document.getElementById('advStepButtons').innerHTML = buttonsHtml;
+        } else {
+            document.getElementById('advStepLoading').innerHTML =
+                '<span style="color: #f85149;">❌ 加载失败: ' + (res.data && res.data.error || '未知错误') + '</span>';
+        }
+    })
+    .catch(function(err) {
+        document.getElementById('advStepLoading').innerHTML =
+            '<span style="color: #f85149;">❌ 请求失败: ' + err + '</span>';
+    });
+}
+
+function selectStep(step) {
+    advSelectedStep = step;
+    document.getElementById('advStep1Panel').style.display = 'none';
+    document.getElementById('advStep2Panel').style.display = 'block';
+
+    var steps = advStepsData.steps[step];
+    document.getElementById('advSelectedStepInfo').innerHTML =
+        '✅ 已选择: <strong style="color: #58a6ff;">' + step + '</strong> | ' +
+        '通过币种: <strong style="color: #7ee787;">' + steps.count + ' 个</strong>';
+}
+
+function showStep1() {
+    advSelectedStep = null;
+    document.getElementById('advStep1Panel').style.display = 'block';
+    document.getElementById('advStep2Panel').style.display = 'none';
+    document.getElementById('advScanStatus').style.display = 'none';
+    document.getElementById('advScanStats').style.display = 'none';
+}
+
+function runVolumeAdvancedScan() {
+    if (!advSelectedStep) {
+        alert('请先选择 step 步骤');
+        return;
+    }
+
+    const gainRange = document.getElementById('advGainRange').value;
+    const volumeRank = document.getElementById('advVolumeRank').value;
+
+    const [minGain, maxGain] = gainRange.split('-').map(v => parseInt(v) / 100);
+    const volumePct = parseFloat(volumeRank);
+
+    document.getElementById('advScanStatus').style.display = 'block';
+    document.getElementById('advScanStatus').innerHTML = '<span style="color: #58a6ff;">🔄 扫描中，实时查询两个策略...</span>';
+    document.getElementById('advScanStats').style.display = 'none';
+    document.getElementById('volumeAdvancedBody').innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8b949e;">扫描中...</td></tr>';
+
+    fetch('/api/volume_advanced', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            selected_step: advSelectedStep,
+            min_gain: minGain,
+            max_gain: maxGain,
+            volume_pct: volumePct
+        })
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.code === 0) {
+            const items = res.data.items || [];
+            const summary = res.data.summary || {};
+            const checkStats = summary.check_stats || {};
+
+            document.getElementById('advScanStatus').innerHTML =
+                `<span style="color: #7ee787;">✅ 扫描完成，找到 ${items.length} 个交叉信号</span>`;
+
+            // 显示统计信息
+            const statsDiv = document.getElementById('advScanStats');
+            statsDiv.style.display = 'block';
+            statsDiv.innerHTML = `
+                <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                    <span>strategy1_pro(${checkStats.strategy1_pro_step}): <strong style="color: #58a6ff;">${checkStats.strategy1_pro_count || 0}</strong> 个</span>
+                    <span>成交量异动: <strong style="color: #ffa657;">${checkStats.volume_surge_count || 0}</strong> 个</span>
+                    <span>交叉信号: <strong style="color: #7ee787;">${items.length}</strong> 个</span>
+                </div>
+            `;
+
+            // 填充结果表格
+            const tbody = document.getElementById('volumeAdvancedBody');
+            if (items.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8b949e;">没有符合条件的币种</td></tr>';
+                return;
+            }
+
+            let html = '';
+            items.forEach(function(item) {
+                const gainColor = item.gain_1h >= 0 ? '#3fb950' : '#f85149';
+                const monthlyGainStr = item.monthly_gain !== null && item.monthly_gain !== undefined
+                    ? (item.monthly_gain * 100).toFixed(2) + '%'
+                    : '-';
+
+                html += '<tr>';
+                html += '<td style="color:#58a6ff;font-weight:500;">' + item.symbol + '</td>';
+                html += '<td>' + item.price.toFixed(6) + '</td>';
+                html += '<td style="color:#d29922;">' + item.pro_step + '</td>';
+                html += '<td>' + item.pro_hrs + 'h</td>';
+                html += '<td style="color:' + gainColor + ';">' + (item.gain_1h * 100).toFixed(2) + '%</td>';
+                html += '<td>' + item.vol_24h.toFixed(2) + '</td>';
+                html += '<td>' + monthlyGainStr + '</td>';
+                html += '</tr>';
+            });
+            tbody.innerHTML = html;
+        } else {
+            document.getElementById('advScanStatus').innerHTML =
+                '<span style="color: #f85149;">❌ 扫描失败: ' + res.msg + '</span>';
+            document.getElementById('volumeAdvancedBody').innerHTML =
+                '<tr><td colspan="7" style="text-align:center;color:#f85149;">扫描失败</td></tr>';
+        }
+    })
+    .catch(function(err) {
+        document.getElementById('advScanStatus').innerHTML =
+            '<span style="color: #f85149;">❌ 请求失败: ' + err + '</span>';
+        document.getElementById('volumeAdvancedBody').innerHTML =
+            '<tr><td colspan="7" style="text-align:center;color:#f85149;">请求失败</td></tr>';
     });
 }
 </script>

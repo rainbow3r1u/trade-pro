@@ -2,6 +2,8 @@
 DeepSeek策略 - AI分析推荐做多币种
 基于19天日线数据分析
 """
+import json
+import os
 import re
 import requests
 import pandas as pd
@@ -438,6 +440,14 @@ class DeepSeekStrategy(BaseStrategy):
         )
         
         self.save_report(report, save_to_db=save_to_db)
+        
+        output_path = Path(os.environ.get('NGINX_WWW_DIR', '/var/www')) / f'{self.strategy_id}.json'
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                'items': report.items,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'summary': report.summary
+            }, f, ensure_ascii=False, indent=2)
         
         self.logger.info(f"推荐 {len(items)} 个币种")
         return report

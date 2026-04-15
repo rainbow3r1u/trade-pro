@@ -101,59 +101,31 @@ def _build_report_from_signals(strategy_name: str, items: list) -> Dict[str, Any
     }
 
 def get_latest_report(strategy_name: str) -> Dict[str, Any]:
-    data = None
-    var_www_file = f'/var/www/{strategy_name}.json'
-    
-    if os.path.exists(var_www_file):
-        with open(var_www_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    else:
-        target_file = str(config.OUTPUT_DIR / f'{strategy_name}.json')
-        if os.path.exists(target_file):
-            with open(target_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        else:
-            pattern = str(config.OUTPUT_DIR / f'{strategy_name}_*.json')
-            files = glob.glob(pattern)
-            if files:
-                target_file = max(files, key=os.path.getmtime)
-                with open(target_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-    
-    if strategy_name in ['strategy1', 'strategy1_pro']:
-        signals_file = f'/var/www/all_signals{"_pro" if strategy_name == "strategy1_pro" else ""}.json'
-        if os.path.exists(signals_file):
-            try:
-                with open(signals_file, 'r', encoding='utf-8') as f:
-                    items = json.load(f)
-                
-                if data is None:
-                    data = _build_report_from_signals(strategy_name, items)
-                else:
-                    data['items'] = items
-                    
-            except Exception as e:
-                logger.error(f"更新 {strategy_name} 的 items 失败: {e}")
-    
-    return data
+    """读取指定策略的最新报告文件"""
+    file_path = Path(os.environ.get('NGINX_WWW_DIR', '/var/www')) / f'{strategy_name}.json'
+    if file_path.exists():
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {'items': [], 'summary': {}, 'timestamp': ''}
 
 
 def get_all_reports() -> List[Dict[str, Any]]:
-    # 复用 get_latest_report 的缓存，避免读取和遍历所有历史文件
     reports = []
-    strategies = ['strategy1', 'strategy1_pro', 'arc_bottom', 'surge_filter', 'volume_surge']
+    strategies = ['strategy1', 'strategy1_pro', 'arc_bottom', 'surge_filter', 'volume_surge', 'volume_advanced']
     for st in strategies:
         data = get_latest_report(st)
         if data:
             reports.append({
                 'name': data.get('strategy_name', st),
-                'title': data.get('title', '未命名'),
+                'title': data.get('title', st),
                 'timestamp': data.get('timestamp', ''),
                 'ts': datetime.strptime(data.get('timestamp', '2000-01-01 00:00:00'), '%Y-%m-%d %H:%M:%S') if data.get('timestamp') else datetime.min,
                 'summary': data.get('summary', {}),
                 'data': data
             })
-            
     reports.sort(key=lambda x: x['ts'], reverse=True)
     return [{'name': r['name'], 'title': r['title'], 'timestamp': r['timestamp'], 'summary': r['summary'], 'data': r['data']} for r in reports]
 
@@ -266,37 +238,52 @@ def health():
     return jsonify({'status': 'ok', 'time': datetime.now().isoformat()})
 
 
-@app.route('/api/<strategy>')
-def api_strategy(strategy):
-    if strategy not in ['strategy1', 'strategy1_pro', 'arc_bottom', 'surge_filter', 'volume_surge']:
-        return jsonify({'code': 1, 'msg': '无效的策略'})
-
+@app.route('/api/volume_advanced/steps', methods=['GET'])
+def api_volume_advanced_steps():
+    """获取 strategy1_pro 最新的 step 数据，供用户选择"""
     try:
-        file_map = {
-            'strategy1': '/var/www/all_signals.json',
-            'strategy1_pro': '/var/www/all_signals_pro.json',
-            'arc_bottom': '/var/www/all_signals_arc.json',
-            'surge_filter': '/var/www/all_signals_surge.json',
-            'volume_surge': '/var/www/volume_surge.json'
-        }
-        signal_file = file_map.get(strategy)
-        if not os.path.exists(signal_file):
-            fallback_map = {
-                'strategy1': 'all_signals.json',
-                'strategy1_pro': 'all_signals_pro.json',
-                'arc_bottom': 'all_signals_arc.json',
-                'surge_filter': 'all_signals_surge.json',
-                'volume_surge': 'volume_surge.json'
-            }
-            signal_file = str(config.DATA_DIR / fallback_map.get(strategy))
+        from strategies.volume_advanced import VolumeAdvancedStrategy
 
-        if os.path.exists(signal_file):
-            with open(signal_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            return jsonify({'code': 0, 'data': data, 'count': len(data)})
-        else:
-            return jsonify({'code': 1, 'msg': '信号文件不存在，请先运行扫描脚本'})
+        strategy = VolumeAdvancedStrategy()
+        steps_info = strategy.get_available_steps()
+
+        return jsonify({'code': 0, 'data': steps_info})
     except Exception as e:
+        logger.error(f"获取 step 数据失败: {e}")
+        return jsonify({'code': 1, 'msg': str(e)})
+
+
+@app.route('/api/volume_advanced', methods=['POST'])
+def api_volume_advanced():
+    """成交量进阶策略 - 实时交叉扫描 strategy1_pro 和成交量异动"""
+    try:
+        from strategies.volume_advanced import VolumeAdvancedStrategy
+
+        # 获取参数
+        data = request.get_json() or {}
+        selected_step = data.get('selected_step', 'step1')  # 用户选择的 step
+        min_gain = data.get('min_gain', 0.01)
+        max_gain = data.get('max_gain', 0.05)
+        volume_pct = data.get('volume_pct', 0.50)
+
+        logger.info(f"成交量进阶扫描请求: step={selected_step}, 涨幅{min_gain*100:.0f}%-{max_gain*100:.0f}%, 成交额前{volume_pct*100:.0f}%")
+
+        # 创建策略实例
+        strategy = VolumeAdvancedStrategy(
+            selected_step=selected_step,
+            min_gain_1h=min_gain,
+            max_gain_1h=max_gain,
+            volume_top_pct=volume_pct
+        )
+
+        # 执行扫描
+        result = strategy.scan()
+
+        logger.info(f"成交量进阶扫描完成: 找到 {len(result.get('items', []))} 个信号")
+
+        return jsonify({'code': 0, 'data': result})
+    except Exception as e:
+        logger.error(f"成交量进阶扫描失败: {e}")
         return jsonify({'code': 1, 'msg': str(e)})
 
 
@@ -343,16 +330,13 @@ def api_signals(strategy):
         return jsonify({'code': 1, 'msg': str(e)})
 
 
-@app.route('/api/surge_filter')
-def api_surge_filter():
-    from strategies.surge_filter import SurgeFilterStrategy
-    try:
-        s = SurgeFilterStrategy()
-        result = s.run()
-        return jsonify({'code': 0, 'data': result})
-    except Exception as e:
-        logger.error(f"surge_filter策略执行失败: {e}")
-        return jsonify({'code': 1, 'msg': str(e)})
+@app.route('/api/<strategy>')
+def api_strategy(strategy):
+    """通用策略API，读取对应策略的报告文件"""
+    if strategy not in ['strategy1', 'strategy1_pro', 'arc_bottom', 'surge_filter', 'volume_surge', 'volume_advanced', 'surge_top_volume']:
+        return jsonify({'code': 1, 'msg': 'Unknown strategy'})
+    report = get_latest_report(strategy)
+    return jsonify({'code': 0, 'data': report})
 
 
 @app.route('/api/btc_rsi')

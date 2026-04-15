@@ -2,6 +2,8 @@
 策略: 1小时涨幅筛选
 筛选条件: 1h涨幅3-10% + 24h成交额<2000万USDT
 """
+import json as _json
+import os
 import pandas as pd
 from datetime import datetime
 from typing import List, Dict, Any
@@ -70,4 +72,15 @@ class SurgeFilterStrategy(BaseStrategy):
             }
         }
         self.save_report(report, save_to_db=False)
+        
+        output_path = Path(os.environ.get('NGINX_WWW_DIR', '/var/www')) / f'{self.strategy_id}.json'
+        output_path.parent.mkdir(exist_ok=True, parents=True)
+        save_data = {
+            'items': items,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'summary': report['summary']
+        }
+        with open(output_path, 'w', encoding='utf-8') as f:
+            _json.dump(save_data, f, ensure_ascii=False, indent=2)
+        
         return report

@@ -2,6 +2,7 @@
 策略基类 - 所有策略的统一接口
 """
 import json
+import os
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -108,6 +109,16 @@ class BaseStrategy(ABC):
         report = self.create_report(items, **report_kwargs)
 
         self.save_report(report, save_to_db=save_to_db)
+
+        output_path = Path(os.environ.get('NGINX_WWW_DIR', '/var/www')) / f'{self.strategy_id}.json'
+        report_items = report.items if hasattr(report, 'items') else report.get('items', [])
+        report_summary = report.summary if hasattr(report, 'summary') else report.get('summary', {})
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                'items': report_items,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'summary': report_summary
+            }, f, ensure_ascii=False, indent=2)
 
         self.logger.info(f"找到 {len(items)} 个符合条件的币")
         return report
