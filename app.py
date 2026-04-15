@@ -169,36 +169,17 @@ def index():
             'data': data.get('data', {})
         })
     
+    # 从统一报告文件读取 items，保持模板兼容
     s1_data = []
-    s1_pro_data = []  # 默认空
+    s1_pro_data = []
     
     if view == 'strategy1_pro':
-        s1_file = '/var/www/all_signals_pro.json'
-        if os.path.exists(s1_file):
-            try:
-                with open(s1_file, 'r', encoding='utf-8') as f:
-                    s1_pro_data = json.load(f)
-            except:
-                pass
+        s1_pro_data = get_latest_report('strategy1_pro').get('items', [])
+        s1_data = s1_pro_data
     elif view == 'arc_bottom':
-        s1_file = '/var/www/all_signals_arc.json'
+        s1_data = get_latest_report('arc_bottom').get('items', [])
     else:
-        s1_file = '/var/www/all_signals.json'
-        
-    if not os.path.exists(s1_file):
-        # Fallback to local data dir if /var/www doesn't exist
-        fallback_map = {
-            'strategy1_pro': 'all_signals_pro.json',
-            'arc_bottom': 'all_signals_arc.json'
-        }
-        s1_file = str(config.DATA_DIR / fallback_map.get(view, 'all_signals.json'))
-        
-    if os.path.exists(s1_file):
-        try:
-            with open(s1_file, 'r', encoding='utf-8') as f:
-                s1_data = json.load(f)
-        except:
-            pass
+        s1_data = get_latest_report('strategy1').get('items', [])
     
     return render_template('index.html', strategies=strategies, s1_data=s1_data, s1_pro_data=s1_pro_data, current_view=view)
 
