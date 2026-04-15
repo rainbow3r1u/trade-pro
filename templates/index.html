@@ -1622,29 +1622,33 @@ function applyFilters() {
         return;
     }
     
-    // 直接使用后端返回的 stepSymbols 和 checkStats，不再重新计算
-    // 成交量筛选：过滤 step_symbols 中 vol 不满足的币种
+    var filterHrsElem = document.getElementById('filterHrs');
     var filterVolElem = document.getElementById('filterVol');
+    var minHrs = filterHrsElem ? parseInt(filterHrsElem.value) : 3;
     var minVol = filterVolElem ? parseFloat(filterVolElem.value) : 0;
     
-    if (minVol > 0 && stepSymbols) {
-        var filteredStepSymbols = {};
-        for (var step in stepSymbols) {
-            filteredStepSymbols[step] = (stepSymbols[step] || []).filter(function(s) {
-                return (s.vol || 0) >= minVol;
-            });
+    if (allSymbolsBars.length > 0) {
+        var calcResult = recalculateSteps(minHrs);
+        // 成交额筛选：过滤step_symbols中vol不满足的币种
+        if (minVol > 0) {
+            var filteredStepSymbols = {};
+            for (var step in calcResult.stepSymbols) {
+                filteredStepSymbols[step] = (calcResult.stepSymbols[step] || []).filter(function(s) {
+                    return (s.vol || 0) >= minVol;
+                });
+            }
+            stepSymbols = filteredStepSymbols;
+            checkStats = {};
+            for (var step in filteredStepSymbols) {
+                checkStats[step] = filteredStepSymbols[step].length;
+            }
+            checkStats.total = allSymbolsBars.length;
+        } else {
+            stepSymbols = calcResult.stepSymbols;
+            checkStats = calcResult.stats;
         }
-        // 更新全局变量
-        stepSymbols = filteredStepSymbols;
-        var filteredCheckStats = {};
-        for (var step in filteredStepSymbols) {
-            filteredCheckStats[step] = filteredStepSymbols[step].length;
-        }
-        filteredCheckStats.total = checkStats.total || 0;
-        checkStats = filteredCheckStats;
+        updateCheckStats();
     }
-    
-    updateCheckStats();
 }
 
 function loadCheckInfo() {
