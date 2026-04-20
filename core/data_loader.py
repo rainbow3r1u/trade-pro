@@ -1,10 +1,11 @@
 """
-数据加载器 - 带缓存的COS数据读取
+数据加载器 - 带缓存的COS数据读取，支持历史数据获取
 """
 import io
 import time
 import pandas as pd
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Union, Tuple
 from qcloud_cos import CosConfig, CosS3Client
 
 import sys
@@ -12,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from configs import config
 from utils.logger import get_logger
+from utils.timezone_utils import TimezoneUtils
 
 logger = get_logger('data_loader')
 
@@ -95,6 +97,105 @@ class DataLoader:
         df = cls.get_klines(use_cache=use_cache)
         vol_24h = df.groupby('symbol')['quote_volume'].sum().sort_values(ascending=False)
         return vol_24h.head(n).index.tolist()
+
+    @classmethod
+    def get_historical_klines(cls,
+                             start_time: Union[datetime, str],
+                             end_time: Optional[Union[datetime, str]] = None,
+                             timeframe: str = '1h',
+                             use_cache: bool = True) -> pd.DataFrame:
+        """
+        获取指定时间范围的历史K线数据
+
+        Args:
+            start_time: 开始时间（北京时间字符串或datetime对象）
+            end_time: 结束时间（北京时间字符串或datetime对象，默认为当前时间）
+            timeframe: K线周期，支持 '1h'（默认）、'4h'、'1d' 等
+            use_cache: 是否使用缓存
+
+        Returns:
+            DataFrame格式的K线数据
+        """
+        # 解析时间参数
+        if isinstance(start_time, str):
+            start_dt = TimezoneUtils.parse_beijing_time_to_utc(start_time)
+        else:
+            start_dt = TimezoneUtils.beijing_to_utc(start_time)
+
+        if end_time is None:
+            end_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+        elif isinstance(end_time, str):
+            end_dt = TimezoneUtils.parse_beijing_time_to_utc(end_time)
+        else:
+            end_dt = TimezoneUtils.beijing_to_utc(end_time)
+
+        logger.info(f"获取历史数据: {TimezoneUtils.format_beijing_time(start_dt)} 到 {TimezoneUtils.format_beijing_time(end_dt)}")
+
+        # 获取完整数据
+        df = cls.get_klines(use_cache=use_cache)
+
+        # 过滤时间范围
+        mask = (df['timestamp'] >= start_dt) & (df['timestamp'] <= end_dt)
+        historical_df = df[mask].copy()
+
+        logger.info(f"历史数据过滤结果: {len(historical_df)} 条K线, {historical_df['symbol'].nunique()} 个币种")
+
+        return historical_df
+
+    @classmethod
+    def get_symbol_historical_data(cls,
+                                  symbol: str,
+                                  start_time: Union[datetime, str],
+                                  end_time: Optional[Union[datetime, str]] = None,
+                                  timeframe: str = '1h',
+                                  use_cache: bool = True) -> Optional[pd.DataFrame]:
+        """
+        获取指定币种的历史K线数据
+
+        Args:
+            symbol: 币种名称
+            start_time: 开始时间（北京时间字符串或datetime对象）
+            end_time: 结束时间（北京时间字符串或datetime对象，默认为当前时间）
+            timeframe: K线周期，支持 '1h'（默认）、'4h'、'1d' 等
+            use_cache: 是否使用缓存
+
+        Returns:
+            指定币种的K线数据，如果没有数据则返回None
+        """
+        # 获取历史数据
+        historical_df = cls.get_historical_klines(
+            start_time=start_time,
+            end_time=end_time,
+            timeframe=timeframe,
+            use_cache=use_cache
+        )
+
+        # 过滤指定币种
+        symbol_data = historical_df[historical_df['symbol'] == symbol].copy()
+
+        if len(symbol_data) == 0:
+            logger.warning(f"币种 {symbol} 在指定时间范围内没有数据")
+            return None
+
+        # 按时间排序
+        symbol_data = symbol_data.sort_values('timestamp').reset_index(drop=True)
+
+        logger.info(f"获取到 {symbol} 的历史数据: {len(symbol_data)} 条K线")
+        return symbol_data
+
+    @classmethod
+    def get_available_time_range(cls) -> Tuple[datetime, datetime]:
+        """
+        获取可用数据的时间范围
+
+        Returns:
+            (开始时间, 结束时间) 的元组（UTC时间）
+        """
+        df = cls.get_klines(use_cache=False)
+        min_time = df['timestamp'].min()
+        max_time = df['timestamp'].max()
+
+        return min_time, max_time
 
 
 def read_cos_data() -> pd.DataFrame:

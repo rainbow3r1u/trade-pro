@@ -68,3 +68,4 @@ configs/config.local.py
 # Chart caches
 static/charts/*.png
 source/static/charts/*.png
+.aider*

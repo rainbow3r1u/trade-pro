@@ -96,7 +96,6 @@ class VolumeAdvancedStrategy(BaseStrategy):
                 }
 
             step_symbols = data.get('summary', {}).get('step_symbols', {})
-            check_stats = data.get('summary', {}).get('check_stats', {})
             timestamp = data.get('timestamp', '')
             scan_cutoff = data.get('summary', {}).get('scan_cutoff_hour', '')
 
@@ -104,7 +103,8 @@ class VolumeAdvancedStrategy(BaseStrategy):
             steps_info = {}
             for step_name in ['step1', 'step2', 'step3', 'step4', 'step5', 'step6']:
                 symbols = step_symbols.get(step_name, [])
-                passed_count = check_stats.get(step_name, 0)
+                # 必须以后端实际返回的 symbols 列表长度为准，避免 check_stats 与 step_symbols 不一致导致前端显示错误
+                passed_count = len(symbols)
                 steps_info[step_name] = {
                     'count': passed_count,
                     'symbols': [

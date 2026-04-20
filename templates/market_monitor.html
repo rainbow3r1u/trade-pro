@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>全量行情监控</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: Arial; margin: 10px; background: #1a1a2e; color: #eee; font-size: 14px; }
+        h1 { color: #00d4ff; font-size: 18px; margin: 10px 0; }
+        .info { color: #888; margin-bottom: 10px; font-size: 12px; }
+        .filter-bar { margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
+        .filter-bar button {
+            background: #16213e; color: #888; border: 1px solid #333;
+            padding: 6px 10px; cursor: pointer; border-radius: 4px; font-size: 12px;
+        }
+        .filter-bar button.active { background: #00d4ff; color: #1a1a2e; }
+        .filter-bar button:hover { border-color: #00d4ff; }
+
+        /* 大单追踪面板 */
+        .surge-panel {
+            background: #16213e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 15px;
+        }
+        .surge-panel h2 {
+            color: #ff9500;
+            font-size: 14px;
+            margin: 0 0 10px 0;
+            cursor: pointer;
+            user-select: none;
+        }
+        .surge-panel h2:hover { color: #ffaa44; }
+        .surge-panel .toggle-icon {
+            font-size: 10px;
+            margin-left: 6px;
+            transition: transform 0.2s;
+        }
+        .surge-panel.collapsed .surge-grid { display: none; }
+        .surge-panel.collapsed .toggle-icon { transform: rotate(-90deg); }
+        .surge-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 8px;
+        }
+        .surge-item {
+            background: #1a1a2e;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 8px 10px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .surge-item:hover { border-color: #ff9500; }
+        .surge-item .sym { color: #00d4ff; font-weight: bold; font-size: 13px; }
+        .surge-item .delta { color: #fff; font-size: 12px; margin-top: 4px; }
+        .surge-item .delta span { color: #aaa; }
+        .surge-item .ratio { font-size: 11px; margin-top: 2px; }
+        .surge-item .ratio .buy { color: #00ff88; }
+        .surge-item .ratio .sell { color: #ff4757; }
+        .surge-empty { color: #555; font-size: 12px; padding: 10px; text-align: center; }
+
+        /* 候选蓄力卡片 */
+        .candidate-item {
+            background: #1a1a2e;
+            border: 1px solid #c07800;
+            border-radius: 6px;
+            padding: 8px 10px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .candidate-item:hover { border-color: #e8a020; }
+        .candidate-item .sym { color: #e8a020; font-weight: bold; font-size: 13px; }
+        .candidate-item .delta { color: #fff; font-size: 12px; margin-top: 4px; }
+        .candidate-item .delta span { color: #aaa; }
+
+        /* 主表格 */
+        .table-wrap { overflow-x: auto; }
+        table { border-collapse: collapse; width: 100%; min-width: 600px; }
+        th { background: #16213e; position: sticky; top: 0; font-size: 12px; }
+        th, td { padding: 8px 4px; border: 1px solid #333; text-align: right; white-space: nowrap; }
+        th:first-child, td:first-child { text-align: center; width: 40px; }
+        td:nth-child(2) { max-width: 70px; overflow: hidden; text-overflow: ellipsis; }
+        td:nth-child(5), td:nth-child(6) { max-width: 70px; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+        tr:hover { background: #16213e; cursor: pointer; }
+        tr.surge-highlight { background: #2a2a4e; }
+        tr.vol-surge { background: #4a1a1a; border: 2px solid #ff4757; }
+        tr.vol-surge td { font-weight: bold; }
+        tr.vol-surge .surge-badge { 
+            background: #ff4757; 
+            color: #fff; 
+            padding: 2px 6px; 
+            border-radius: 4px; 
+            font-size: 11px; 
+            margin-left: 4px;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .rank { color: #888; }
+        .gain-up { color: #00ff88; }
+        .gain-down { color: #ff4757; }
+        .cat-tag { font-size: 11px; padding: 2px 6px; border-radius: 3px; }
+        .cat-gold { background: #ffd700; color: #000; }
+        .cat-silver { background: #c0c0c0; color: #000; }
+        .cat-stock { background: #4169e1; color: #fff; }
+        .copyable { cursor: pointer; color: #00d4ff; }
+        .copyable:hover { text-decoration: underline; }
+
+        /* 买卖比列 */
+        .buy-col { font-size: 11px; }
+        .buy-indicator {
+            display: inline-block;
+            width: 40px;
+            height: 6px;
+            border-radius: 3px;
+            background: #333;
+            position: relative;
+            vertical-align: middle;
+            margin-right: 4px;
+        }
+        .buy-indicator .fill {
+            position: absolute;
+            left: 0; top: 0; bottom: 0;
+            border-radius: 3px;
+            background: #00ff88;
+        }
+        .buy-indicator .empty {
+            position: absolute;
+            right: 0; top: 0; bottom: 0;
+            background: #ff4757;
+            border-radius: 0 3px 3px 0;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal.show { display: flex; }
+        .modal-content {
+            background: #16213e;
+            border: 1px solid #444;
+            border-radius: 10px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding: 20px;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .modal-header h2 { color: #00d4ff; margin: 0; font-size: 16px; }
+        .modal-close { background: none; border: none; color: #888; font-size: 20px; cursor: pointer; }
+        .modal-close:hover { color: #fff; }
+        .modal-info {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .modal-info .info-item {
+            background: #1a1a2e;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+        }
+        .modal-info .info-item .label { color: #888; }
+        .modal-info .info-item .value { color: #fff; font-weight: bold; }
+        .modal-info .info-item .value.up { color: #00ff88; }
+        .modal-info .info-item .value.down { color: #ff4757; }
+
+        /* 分钟K线图表 */
+        .minute-bars {
+            display: flex;
+            align-items: flex-end;
+            gap: 2px;
+            height: 60px;
+            margin-top: 10px;
+        }
+        .minute-bar {
+            flex: 1;
+            min-width: 4px;
+            border-radius: 2px 2px 0 0;
+            position: relative;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+        }
+        .minute-bar .bar-fill {
+            width: 100%;
+            border-radius: 2px 2px 0 0;
+            min-height: 2px;
+        }
+        .minute-bar.buy .bar-fill { background: #00ff88; }
+        .minute-bar.sell .bar-fill { background: #ff4757; }
+        .minute-bar.neutral .bar-fill { background: #888; }
+        .minute-bar:hover { opacity: 0.8; }
+        .minute-bar .tooltip {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #000;
+            color: #fff;
+            padding: 4px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            white-space: nowrap;
+            z-index: 10;
+        }
+        .minute-bar:hover .tooltip { display: block; }
+
+        .minute-legend {
+            display: flex;
+            gap: 15px;
+            font-size: 11px;
+            color: #888;
+            margin-top: 8px;
+        }
+        .minute-legend span { display: flex; align-items: center; gap: 4px; }
+        .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+        .legend-dot.buy { background: #00ff88; }
+        .legend-dot.sell { background: #ff4757; }
+        .legend-dot.neutral { background: #888; }
+    </style>
+</head>
+<body>
+    <h1>📊 全量行情监控</h1>
+    <div class="info">
+        共 <span id="count">0</span> 个USDT永续合约 | 
+        WebSocket: <span id="ws_status">连接中...</span> |
+        最后更新: <span id="updated">-</span>
+    </div>
+
+    <!-- 大单追踪面板 -->
+    <div class="surge-panel" id="surge_panel">
+        <h2 class="collapsible" onclick="togglePanel('surge_grid')">🔥 大单追踪（delta_q &gt; 50万/秒）<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="surge_grid">
+            <div class="surge-empty">加载中...</div>
+        </div>
+    </div>
+
+    <!-- 15分钟成交量突增面板 -->
+    <div class="surge-panel" id="vol_surge_panel" style="margin-top:10px; border-color: #ff4757;">
+        <h2 class="collapsible" onclick="togglePanel('vol_surge_grid')" style="color: #ff4757;">🔥 15分钟成交量突增（&gt;1.5倍，持续1小时）<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="vol_surge_grid">
+            <div class="surge-empty">暂无突增</div>
+        </div>
+    </div>
+
+    <!-- 布林爬坡预警面板 -->
+    <div class="surge-panel" id="climb_panel" style="margin-top:10px;">
+        <h2 class="collapsible" onclick="togglePanel('climb_grid')">📈 布林爬坡预警（贴着布林上轨连续3小时buy_ratio&gt;55%）<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="climb_grid">
+            <div class="surge-empty">暂无信号（需等待数据积累）</div>
+        </div>
+    </div>
+
+    <!-- 布林候选蓄力面板 -->
+    <div class="surge-panel" id="candidate_panel" style="margin-top:10px; border-color: #c07800;">
+        <h2 class="collapsible" onclick="togglePanel('candidate_grid')" style="color: #e8a020;">🔶 布林候选蓄力（爬坡断后在上轨附近蓄力≥3小时）<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="candidate_grid">
+            <div class="surge-empty">暂无候选</div>
+        </div>
+    </div>
+
+    <!-- 策略回溯面板 -->
+    <div class="surge-panel" id="backtest_panel" style="margin-top:10px; border-color: #9b59b6;">
+        <h2 class="collapsible" onclick="togglePanel('backtest_content')" style="color: #9b59b6;">🔬 策略回溯测试<span class="toggle-icon">▼</span></h2>
+        <div id="backtest_content" style="padding: 12px;">
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
+                <div>
+                    <label style="color: #888; font-size: 12px;">币种:</label><br>
+                    <input type="text" id="backtest_symbol" placeholder="HIGHUSDT" style="background: #1a1a2e; border: 1px solid #333; color: #eee; padding: 5px 10px; border-radius: 4px; width: 120px;">
+                </div>
+                <div>
+                    <label style="color: #888; font-size: 12px;">开始时间:</label><br>
+                    <input type="text" id="backtest_start" placeholder="2026-04-17 00:00:00" style="background: #1a1a2e; border: 1px solid #333; color: #eee; padding: 5px 10px; border-radius: 4px; width: 150px;">
+                </div>
+                <div>
+                    <label style="color: #888; font-size: 12px;">结束时间:</label><br>
+                    <input type="text" id="backtest_end" placeholder="2026-04-19 00:00:00" style="background: #1a1a2e; border: 1px solid #333; color: #eee; padding: 5px 10px; border-radius: 4px; width: 150px;">
+                </div>
+                <div>
+                    <label style="color: #888; font-size: 12px;">策略:</label><br>
+                    <select id="backtest_strategy" style="background: #1a1a2e; border: 1px solid #333; color: #eee; padding: 5px 10px; border-radius: 4px;">
+                        <option value="bollinger_climb">布林爬坡</option>
+                        <option value="bollinger_candidate">候选蓄力</option>
+                    </select>
+                </div>
+                <div style="display: flex; align-items: flex-end;">
+                    <button onclick="runBacktest()" style="background: #9b59b6; border: none; color: #fff; padding: 6px 14px; border-radius: 4px; cursor: pointer;">开始回溯</button>
+                </div>
+            </div>
+            <div id="backtest_result" style="display: none;">
+                <div style="background: #1a1a2e; border-radius: 6px; padding: 10px; margin-top: 10px;">
+                    <div id="backtest_summary" style="color: #888; font-size: 12px; margin-bottom: 10px;"></div>
+                    <div id="backtest_signals" style="max-height: 300px; overflow-y: auto;"></div>
+                </div>
+            </div>
+            
+            <!-- 调试面板 -->
+            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #333;">
+                <div style="color: #888; font-size: 13px; margin-bottom: 8px;">🔍 调试指定时间点</div>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;">
+                    <div>
+                        <label style="color: #666; font-size: 11px;">币种:</label><br>
+                        <input type="text" id="debug_symbol" placeholder="HIGHUSDT" style="background: #0d0d1a; border: 1px solid #444; color: #eee; padding: 4px 8px; border-radius: 3px; width: 100px; font-size: 12px;">
+                    </div>
+                    <div>
+                        <label style="color: #666; font-size: 11px;">时间点:</label><br>
+                        <input type="text" id="debug_timestamp" placeholder="2026-04-18 05:00:00" style="background: #0d0d1a; border: 1px solid #444; color: #eee; padding: 4px 8px; border-radius: 3px; width: 140px; font-size: 12px;">
+                    </div>
+                    <div style="display: flex; align-items: flex-end;">
+                        <button onclick="debugTimestamp()" style="background: #2c3e50; border: none; color: #fff; padding: 4px 12px; border-radius: 3px; cursor: pointer; font-size: 12px;">调试</button>
+                    </div>
+                </div>
+                <div id="debug_result" style="display: none; margin-top: 10px;">
+                    <div style="background: #0d0d1a; border-radius: 4px; padding: 10px;">
+                        <div id="debug_summary" style="font-size: 13px; margin-bottom: 10px;"></div>
+                        <div id="debug_conditions" style="font-size: 11px;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="filter-bar">
+        <button class="active" data-filter="all">全部</button>
+        <button data-filter="crypto">仅加密货币</button>
+        <button data-filter="metal">贵金属</button>
+        <button data-filter="stock">美股</button>
+    </div>
+    <div class="table-wrap">
+    <table>
+        <thead id="thead">
+            <tr id="header-row">
+                <th>排名</th>
+                <th>币种</th>
+                <th>名称</th>
+                <th>分类</th>
+                <th>价格 (USDT)</th>
+                <th>24h成交额</th>
+                <th>涨跌幅</th>
+                <th>多空比</th>
+            </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+    </table>
+    </div>
+
+    <!-- 详情Modal -->
+    <div class="modal" id="detail_modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal_title">币种详情</h2>
+                <button class="modal-close" onclick="closeModal()">×</button>
+            </div>
+            <div class="modal-info" id="modal_info"></div>
+            <div class="minute-legend">
+                <span><div class="legend-dot buy"></div> 买方主导 (buy_ratio &gt; 0.55)</span>
+                <span><div class="legend-dot sell"></div> 卖方主导 (buy_ratio &lt; 0.45)</span>
+                <span><div class="legend-dot neutral"></div> 多空均衡</span>
+            </div>
+            <div class="minute-bars" id="minute_bars"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        // 面板折叠功能
+        function togglePanel(gridId) {
+            const panel = document.getElementById(gridId).parentElement;
+            panel.classList.toggle('collapsed');
+        }
+
+        const tbody = document.getElementById('tbody');
+        const countEl = document.getElementById('count');
+        const wsStatus = document.getElementById('ws_status');
+        const updatedEl = document.getElementById('updated');
+        const surgeGrid = document.getElementById('surge_grid');
+        let allData = {};
+        let surgeData = [];
+        let currentFilter = 'all';
+        let socket = io();
+
+        // WebSocket连接状态
+        socket.on('connect', () => {
+            console.log('Socket.IO 已连接');
+            wsStatus.textContent = '已连接';
+        });
+        socket.on('disconnect', () => {
+            console.log('Socket.IO 断开');
+            wsStatus.textContent = '断开';
+        });
+        socket.on('connect_error', (error) => {
+            console.log('Socket.IO 连接错误:', error);
+            wsStatus.textContent = '错误';
+        });
+        socket.on('error', () => {
+            console.log('Socket.IO 错误');
+            wsStatus.textContent = '错误';
+        });
+
+        // 初始化数据
+        socket.on('init_data', (res) => {
+            allData = {};
+            res.data.forEach(row => allData[row.symbol] = row);
+            render();
+            countEl.textContent = res.count;
+            updatedEl.textContent = new Date().toLocaleTimeString();
+        });
+
+        // 实时更新
+        socket.on('ws_update', (res) => {
+            res.data.forEach(item => {
+                if (allData[item.symbol]) {
+                    allData[item.symbol].price = item.price;
+                    allData[item.symbol].q = item.q;
+                    const o = allData[item.symbol].o;
+                    if (o > 0) {
+                        allData[item.symbol].gain_pct = Math.round((item.price - o) / o * 10000) / 100;
+                    }
+                }
+            });
+            render();
+            updatedEl.textContent = new Date().toLocaleTimeString();
+        });
+
+        // 轮询大单数据
+        function loadSurge() {
+            fetch('/api/surge')
+                .then(r => r.json())
+                .then(res => {
+                    if (res.code === 0 && res.data.length > 0) {
+                        surgeData = res.data;
+                        renderSurge();
+                    }
+                })
+                .catch(() => {});
+        }
+        setInterval(loadSurge, 5000);
+        loadSurge();
+
+        // 15分钟成交量突增
+        let volSurgeData = [];
+        function loadVolSurge() {
+            fetch('/api/vol_surge')
+                .then(r => r.json())
+                .then(res => {
+                    if (res.code === 0) {
+                        volSurgeData = res.data || [];
+                        renderVolSurge();
+                    }
+                })
+                .catch(() => {});
+        }
+        setInterval(loadVolSurge, 10000);  // 每10秒更新
+        loadVolSurge();
+
+        function renderVolSurge() {
+            const grid = document.getElementById('vol_surge_grid');
+            if (volSurgeData.length === 0) {
+                grid.innerHTML = '<div class="surge-empty">暂无突增</div>';
+                return;
+            }
+            grid.innerHTML = volSurgeData.map(item => {
+                const remainingMin = Math.ceil(item.remaining_seconds / 60);
+                return `<div class="surge-item" style="border-color: #ff4757;" onclick="openModal('${item.symbol}')">
+                    <div class="sym" style="color: #ff4757;">${item.symbol} <span style="font-size:11px;">🔥${item.ratio}x</span></div>
+                    <div class="delta"><span>15m成交:</span> <span style="color:#ff4757;">${(item.vol_15m / 1e3).toFixed(1)}K</span></div>
+                    <div class="delta"><span>上期:</span> ${(item.last_vol / 1e3).toFixed(1)}K</div>
+                    <div class="delta"><span>剩余:</span> ${remainingMin}分钟</div>
+                </div>`;
+            }).join('');
+        }
+
+        // 布林爬坡预警
+        let climbData = [];
+        let candidateData = [];
+        function loadClimb() {
+            fetch('/api/bollinger_climb')
+                .then(r => r.json())
+                .then(res => {
+                    if (res.code === 0) {
+                        climbData = res.data || [];
+                        candidateData = res.candidates || [];
+                        renderClimb();
+                        renderCandidate();
+                    }
+                })
+                .catch(() => {});
+        }
+        setInterval(loadClimb, 30000);  // 每30秒检查一次（数据积累慢）
+        loadClimb();
+
+        function renderClimb() {
+            const grid = document.getElementById('climb_grid');
+            if (climbData.length === 0) {
+                grid.innerHTML = '<div class="surge-empty">暂无信号</div>';
+                return;
+            }
+            grid.innerHTML = climbData.map(item => {
+                const lastHour = item.valid_hours[item.valid_hours.length - 1];
+                const buyPct = Math.round(lastHour.buy_ratio * 100);
+                const timeStr = new Date(lastHour.t * 1000).toLocaleTimeString('zh-CN', {hour: '2-digit', minute:'2-digit'});
+                return `<div class="surge-item" onclick="openModal('${item.symbol}')">
+                    <div class="sym">${item.symbol}</div>
+                    <div class="delta"><span>连续:</span> ${item.consecutive_hours}小时</div>
+                    <div class="delta"><span>上轨:</span> ${item.upper.toFixed(4)}</div>
+                    <div class="delta"><span>最新价:</span> ${lastHour.c.toFixed(4)}</div>
+                    <div class="ratio"><span class="${buyPct > 55 ? 'buy' : 'sell'}">买入${buyPct}%</span></div>
+                    <div class="delta" style="color:#888;font-size:10px;">${timeStr}</div>
+                </div>`;
+            }).join('');
+        }
+
+        function renderCandidate() {
+            const grid = document.getElementById('candidate_grid');
+            if (candidateData.length === 0) {
+                grid.innerHTML = '<div class="surge-empty">暂无候选</div>';
+                return;
+            }
+            grid.innerHTML = candidateData.map(item => {
+                const lastHour = item.candidate_hours[item.candidate_hours.length - 1];
+                const timeStr = new Date(lastHour.t * 1000).toLocaleTimeString('zh-CN', {hour: '2-digit', minute:'2-digit'});
+                return `<div class="candidate-item" onclick="openModal('${item.symbol}')">
+                    <div class="sym">${item.symbol}</div>
+                    <div class="delta"><span>蓄力:</span> ${item.consecutive_hours}小时</div>
+                    <div class="delta"><span>上轨:</span> ${item.upper.toFixed(4)}</div>
+                    <div class="delta"><span>最新价:</span> ${lastHour.c.toFixed(4)}</div>
+                    <div class="delta" style="color:#c07800;font-size:10px;">${timeStr}</div>
+                </div>`;
+            }).join('');
+        }
+
+        // 渲染大单面板
+        function renderSurge() {
+            if (surgeData.length === 0) {
+                surgeGrid.innerHTML = '<div class="surge-empty">暂无大单</div>';
+                return;
+            }
+            surgeGrid.innerHTML = surgeData.map(item => {
+                const buyPct = Math.round(item.avg_buy_ratio * 100);
+                const sellPct = 100 - buyPct;
+                const timeAgo = Math.round((Date.now() / 1000 - item.last_t) / 60);
+                return `<div class="surge-item" onclick="openModal('${item.symbol}')">
+                    <div class="sym">${item.symbol}</div>
+                    <div class="delta"><span>delta:</span> ${(item.total_delta_q / 1e6).toFixed(2)}M</div>
+                    <div class="ratio">
+                        <span class="buy">买${buyPct}%</span> / <span class="sell">卖${sellPct}%</span>
+                    </div>
+                    <div class="delta" style="font-size:10px;color:#666">${timeAgo}分钟前</div>
+                </div>`;
+            }).join('');
+        }
+
+        // 打开Modal
+        function openModal(symbol) {
+            document.getElementById('detail_modal').classList.add('show');
+            document.getElementById('modal_title').textContent = symbol;
+            document.getElementById('modal_info').innerHTML = '<div class="info-item" style="color:#888">加载中...</div>';
+            document.getElementById('minute_bars').innerHTML = '';
+
+            // 获取基本信息
+            const info = allData[symbol] || {};
+            const gain = info.gain_pct || 0;
+            const gainClass = gain >= 0 ? 'up' : 'down';
+
+            // 获取分钟数据
+            fetch(`/api/minute_buy_ratio/${symbol}`)
+                .then(r => r.json())
+                .then(res => {
+                    if (res.code === 0 && res.data.length > 0) {
+                        renderModal(symbol, info, res.data);
+                    } else {
+                        document.getElementById('modal_info').innerHTML = '<div class="info-item" style="color:#888">暂无分钟数据</div>';
+                    }
+                })
+                .catch(() => {
+                    document.getElementById('modal_info').innerHTML = '<div class="info-item" style="color:#888">加载失败</div>';
+                });
+        }
+
+        function renderModal(symbol, info, minuteData) {
+            // 基本信息
+            const gain = info.gain_pct || 0;
+            const gainSign = gain >= 0 ? '+' : '';
+            document.getElementById('modal_info').innerHTML = `
+                <div class="info-item">
+                    <div class="label">价格</div>
+                    <div class="value">${info.price?.toFixed(4) || '-'} USDT</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">24h涨跌</div>
+                    <div class="value ${gain >= 0 ? 'up' : 'down'}">${gainSign}${gain}%</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">24h成交额</div>
+                    <div class="value">${info.q ? (info.q / 1e6).toFixed(2) : '-'} M</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">最近${minuteData.length}分钟</div>
+                    <div class="value">买入 ${Math.round(minuteData.reduce((s, m) => s + m.buy_q, 0) / 1e6, 2)}M</div>
+                </div>
+            `;
+
+            // 分钟K线可视化
+            const bars = document.getElementById('minute_bars');
+            const maxQ = Math.max(...minuteData.map(m => m.q));
+            bars.innerHTML = minuteData.slice(-30).map(m => {
+                const buyRatio = m.buy_ratio || 0.5;
+                const heightPct = maxQ > 0 ? (m.q / maxQ * 100) : 5;
+                const cls = buyRatio > 0.55 ? 'buy' : (buyRatio < 0.45 ? 'sell' : 'neutral');
+                const time = new Date(m.t * 1000).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
+                const gainPct = m.gain?.toFixed(1) || '0';
+                return `<div class="minute-bar ${cls}" title="${time}">
+                    <div class="bar-fill" style="height:${heightPct}%"></div>
+                    <div class="tooltip">${time}<br>${(m.q/1e6).toFixed(2)}M<br>买${Math.round(buyRatio*100)}%<br>涨跌${gainPct}%</div>
+                </div>`;
+            }).join('');
+        }
+
+        function closeModal() {
+            document.getElementById('detail_modal').classList.remove('show');
+        }
+
+        // 点击Modal背景关闭
+        document.getElementById('detail_modal').addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+
+        // ESC关闭
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+        // 筛选按钮
+        document.querySelectorAll('.filter-bar button').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.filter-bar button').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentFilter = btn.dataset.filter;
+                render();
+            });
+        });
+
+        function copyText(text, el, e) {
+            if (e) e.preventDefault();
+            const textToCopy = el.dataset.copy || text;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(textToCopy).then(() => {
+                    const orig = el.textContent;
+                    el.textContent = '✓';
+                    setTimeout(() => el.textContent = orig, 600);
+                }).catch(() => { fallbackCopy(textToCopy); });
+            } else {
+                fallbackCopy(textToCopy);
+            }
+        }
+        
+        function fallbackCopy(text) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            alert('已复制: ' + text);
+        }
+
+        function getCatClass(cat_type) {
+            if (cat_type === '贵金属') return 'cat-gold';
+            if (cat_type === '美股') return 'cat-stock';
+            return '';
+        }
+
+        function render() {
+            let rows = Object.values(allData);
+            
+            // 筛选
+            if (currentFilter === 'crypto') {
+                rows = rows.filter(r => !r.cat_type);
+            } else if (currentFilter === 'metal') {
+                rows = rows.filter(r => r.cat_type === '贵金属');
+            } else if (currentFilter === 'stock') {
+                rows = rows.filter(r => r.cat_type === '美股');
+            }
+            
+            const showExtra = currentFilter !== 'all';
+            
+            // 更新表头
+            const headerRow = document.getElementById('header-row');
+            if (showExtra) {
+                headerRow.innerHTML = '<th>排名</th><th>币种</th><th>名称</th><th>分类</th><th>价格</th><th>今日成交额</th><th>15m成交额</th><th>涨跌幅</th><th>多空比</th>';
+            } else {
+                headerRow.innerHTML = '<th>排名</th><th>币种</th><th>价格</th><th>今日成交额</th><th>15m成交额</th><th>涨跌幅</th><th>多空比</th>';
+            }
+            
+            rows.sort((a, b) => b.gain_pct - a.gain_pct);
+            
+            tbody.innerHTML = rows.map((r, i) => {
+                const cls = r.gain_pct >= 0 ? 'gain-up' : 'gain-down';
+                const sign = r.gain_pct >= 0 ? '+' : '';
+                const catHtml = r.cat_name 
+                    ? `<span class="cat-tag ${getCatClass(r.cat_type)}">${r.cat_name}</span>` 
+                    : '';
+                const nameTd = showExtra ? `<td><span class="copyable" data-copy="${r.cat_name || r.symbol}" onclick="copyText('${r.cat_name || r.symbol}', this, event)" title="点击复制">${r.cat_name || '-'}</span></td>` : '';
+                const catTd = showExtra ? `<td>${catHtml}</td>` : '';
+
+                // 检查是否有surge数据
+                const surge = surgeData.find(s => s.symbol === r.symbol);
+                const rowClass = r.is_surge ? 'vol-surge' : (surge ? 'surge-highlight' : '');
+                const buyRatio = surge ? surge.avg_buy_ratio : 0.5;
+                const buyPct = Math.round(buyRatio * 100);
+                const buyColHtml = `<td class="buy-col">
+                    <span class="buy-indicator">
+                        <span class="fill" style="width:${buyPct}%"></span>
+                        <span class="empty" style="width:${100-buyPct}%"></span>
+                    </span>
+                    <span class="${buyRatio > 0.55 ? 'gain-up' : (buyRatio < 0.45 ? 'gain-down' : '')}">${buyPct}</span>
+                </td>`;
+
+                // 15分钟成交额显示（突增时显示倍数）
+                // vol_15m: 前4小时的15分钟均值
+                // vol_15m_current: 当前15分钟成交额
+                const vol15mDisplay = r.vol_15m 
+                    ? (r.is_surge 
+                        ? `<span style="color:#ff4757;">${(r.vol_15m_current / 1e3).toFixed(1)}K</span><span class="surge-badge">🔥${r.surge_ratio}x</span>`
+                        : `${(r.vol_15m / 1e3).toFixed(1)}K`)
+                    : '-';
+
+                return `<tr class="${rowClass}" onclick="openModal('${r.symbol}')">
+                    <td class="rank">${i + 1}</td>
+                    <td><span class="copyable" data-copy="${r.symbol}" onclick="copyText('${r.symbol}', this, event)" title="点击复制">${r.symbol}</span></td>
+                    ${nameTd}
+                    ${catTd}
+                    <td>${r.price.toFixed(4)}</td>
+                    <td>${(r.q / 1e6).toFixed(2)}M</td>
+                    <td>${vol15mDisplay}</td>
+                    <td class="${cls}">${sign}${r.gain_pct}%</td>
+                    ${buyColHtml}
+                </tr>`;
+            }).join('');
+        }
+
+        // ========== 回溯测试功能 ==========
+        function runBacktest() {
+            const symbol = document.getElementById('backtest_symbol').value.trim().toUpperCase();
+            const startTime = document.getElementById('backtest_start').value.trim();
+            const endTime = document.getElementById('backtest_end').value.trim();
+            const strategy = document.getElementById('backtest_strategy').value;
+
+            if (!symbol) {
+                alert('请输入币种');
+                return;
+            }
+            if (!startTime) {
+                alert('请输入开始时间');
+                return;
+            }
+
+            const resultDiv = document.getElementById('backtest_result');
+            const summaryDiv = document.getElementById('backtest_summary');
+            const signalsDiv = document.getElementById('backtest_signals');
+
+            resultDiv.style.display = 'block';
+            summaryDiv.innerHTML = '<span style="color: #9b59b6;">⏳ 回溯测试中...</span>';
+            signalsDiv.innerHTML = '';
+
+            const endpoint = strategy === 'bollinger_climb' ? '/api/backtest/bollinger_climb' : '/api/backtest/bollinger_candidate';
+            
+            fetch(endpoint, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbol: symbol,
+                    start_time: startTime,
+                    end_time: endTime || null
+                })
+            })
+            .then(r => r.json())
+            .then(res => {
+                if (res.code !== 0) {
+                    summaryDiv.innerHTML = `<span style="color: #ff4757;">❌ 错误: ${res.msg}</span>`;
+                    return;
+                }
+
+                const data = res.data;
+                const summary = data.summary || {};
+
+                summaryDiv.innerHTML = `
+                    <span style="color: #00ff88;">✅ 回溯完成</span> | 
+                    币种: <span style="color: #00d4ff;">${data.symbol}</span> | 
+                    时间范围: ${data.start_time} ~ ${data.end_time} | 
+                    信号数: <span style="color: #00ff88; font-weight: bold;">${summary.total_signals || 0}</span> | 
+                    失败检查: <span style="color: #ff4757;">${summary.total_failed_checks || 0}</span> | 
+                    信号频率: ${(summary.signal_frequency || 0).toFixed(4)}/小时
+                `;
+
+                if (data.signals && data.signals.length > 0) {
+                    signalsDiv.innerHTML = `
+                        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                            <thead>
+                                <tr style="background: #16213e;">
+                                    <th style="padding: 6px; text-align: left; border-bottom: 1px solid #333;">时间</th>
+                                    <th style="padding: 6px; text-align: right; border-bottom: 1px solid #333;">价格</th>
+                                    <th style="padding: 6px; text-align: center; border-bottom: 1px solid #333;">连续小时</th>
+                                    <th style="padding: 6px; text-align: right; border-bottom: 1px solid #333;">上轨</th>
+                                    <th style="padding: 6px; text-align: right; border-bottom: 1px solid #333;">中轨</th>
+                                    <th style="padding: 6px; text-align: left; border-bottom: 1px solid #333;">条件满足</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${data.signals.map((sig, i) => {
+                                    const conditions = sig.conditions_met || {};
+                                    const metList = Object.entries(conditions)
+                                        .map(([k, v]) => `<span style="color: ${v ? '#00ff88' : '#ff4757'};">${k}:${v ? '✓' : '✗'}</span>`)
+                                        .join(' ');
+                                    return `
+                                        <tr style="background: ${i % 2 === 0 ? '#1a1a2e' : '#16213e'};">
+                                            <td style="padding: 6px;">${sig.timestamp}</td>
+                                            <td style="padding: 6px; text-align: right; color: #00d4ff;">${sig.price.toFixed(4)}</td>
+                                            <td style="padding: 6px; text-align: center; color: #00ff88; font-weight: bold;">${sig.data?.consecutive_hours || 0}h</td>
+                                            <td style="padding: 6px; text-align: right;">${(sig.data?.upper || 0).toFixed(4)}</td>
+                                            <td style="padding: 6px; text-align: right;">${(sig.data?.middle || 0).toFixed(4)}</td>
+                                            <td style="padding: 6px; font-size: 10px;">${metList}</td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                } else {
+                    signalsDiv.innerHTML = '<div style="color: #888; text-align: center; padding: 20px;">未检测到信号</div>';
+                }
+            })
+            .catch(err => {
+                summaryDiv.innerHTML = `<span style="color: #ff4757;">❌ 请求失败: ${err}</span>`;
+            });
+        }
+
+        // ========== 调试指定时间点 ==========
+        function debugTimestamp() {
+            const symbol = document.getElementById('debug_symbol').value.trim().toUpperCase();
+            const timestamp = document.getElementById('debug_timestamp').value.trim();
+
+            if (!symbol) {
+                alert('请输入币种');
+                return;
+            }
+            if (!timestamp) {
+                alert('请输入时间点');
+                return;
+            }
+
+            const resultDiv = document.getElementById('debug_result');
+            const summaryDiv = document.getElementById('debug_summary');
+            const conditionsDiv = document.getElementById('debug_conditions');
+
+            resultDiv.style.display = 'block';
+            summaryDiv.innerHTML = '<span style="color: #9b59b6;">⏳ 检查中...</span>';
+            conditionsDiv.innerHTML = '';
+
+            fetch('/api/backtest/debug', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbol: symbol,
+                    timestamp: timestamp
+                })
+            })
+            .then(r => r.json())
+            .then(res => {
+                if (res.code !== 0) {
+                    summaryDiv.innerHTML = `<span style="color: #ff4757;">❌ 错误: ${res.msg}</span>`;
+                    return;
+                }
+
+                const data = res.data;
+
+                if (data.error) {
+                    let errorHtml = `<span style="color: #ff4757;">❌ ${data.error}</span>`;
+                    
+                    if (data.data_info) {
+                        errorHtml += `<div style="margin-top: 8px; padding: 8px; background: rgba(255,71,87,0.1); border-radius: 4px; font-size: 11px;">`;
+                        errorHtml += `<div style="color: #888;">数据源: <span style="color: #00d4ff;">${data.data_info.data_source}</span></div>`;
+                        errorHtml += `<div style="color: #888;">当前K线数: <span style="color: #ff4757;">${data.data_info.available_klines}</span> / 需要: <span style="color: #00ff88;">${data.data_info.required_klines}</span></div>`;
+                        errorHtml += `</div>`;
+                    }
+                    
+                    if (data.suggestion) {
+                        errorHtml += `<div style="margin-top: 8px; color: #ffd93d; font-size: 11px;">💡 ${data.suggestion}</div>`;
+                    }
+                    
+                    summaryDiv.innerHTML = errorHtml;
+                    conditionsDiv.innerHTML = '';
+                    return;
+                }
+
+                const isSignal = data.is_signal;
+                const summaryColor = isSignal ? '#00ff88' : '#ff4757';
+                const summaryIcon = isSignal ? '✅' : '❌';
+
+                summaryDiv.innerHTML = `
+                    <span style="color: ${summaryColor};">${summaryIcon} ${data.summary}</span><br>
+                    <span style="color: #888;">币种: <span style="color: #00d4ff;">${data.symbol}</span> | 
+                    时间: ${data.timestamp} | 
+                    价格: <span style="color: #00d4ff;">${data.price}</span></span>
+                `;
+
+                const conditions = data.conditions || {};
+                let conditionsHtml = '<div style="margin-top: 10px;">';
+                conditionsHtml += '<table style="width: 100%; border-collapse: collapse;">';
+                conditionsHtml += '<tr style="background: #16213e;"><th style="padding: 4px 6px; text-align: left; border-bottom: 1px solid #333;">条件</th><th style="padding: 4px 6px; text-align: center; border-bottom: 1px solid #333;">结果</th><th style="padding: 4px 6px; text-align: left; border-bottom: 1px solid #333;">说明</th></tr>';
+
+                const condNames = {
+                    'price_above_middle': '价格 > 中轨',
+                    'price_near_upper': '价格在上轨附近',
+                    'volume_ratio': '量能放大',
+                    'hl_climb': 'HL抬高',
+                    'atr_filter': 'ATR过滤'
+                };
+
+                for (const [key, cond] of Object.entries(conditions)) {
+                    const passed = cond.passed;
+                    const icon = passed ? '<span style="color: #00ff88;">✓</span>' : '<span style="color: #ff4757;">✗</span>';
+                    const rowBg = passed ? '' : 'background: rgba(255,71,87,0.1);';
+                    const name = condNames[key] || key;
+
+                    conditionsHtml += `<tr style="${rowBg}">`;
+                    conditionsHtml += `<td style="padding: 4px 6px;">${name}</td>`;
+                    conditionsHtml += `<td style="padding: 4px 6px; text-align: center;">${icon}</td>`;
+                    conditionsHtml += `<td style="padding: 4px 6px; color: #888;">${cond.description || ''}</td>`;
+                    conditionsHtml += `</tr>`;
+                }
+
+                conditionsHtml += '</table>';
+
+                if (data.bb_data) {
+                    conditionsHtml += `
+                        <div style="margin-top: 10px; padding: 8px; background: #0a0a14; border-radius: 4px;">
+                            <span style="color: #666;">布林带: </span>
+                            <span style="color: #888;">上轨: <span style="color: #ff6b6b;">${data.bb_data.upper}</span> | </span>
+                            <span style="color: #888;">中轨: <span style="color: #ffd93d;">${data.bb_data.middle}</span> | </span>
+                            <span style="color: #888;">下轨: <span style="color: #6bcb77;">${data.bb_data.lower}</span></span>
+                            ${data.bb_data.atr ? `<span style="color: #888;"> | ATR: <span style="color: #4d96ff;">${data.bb_data.atr}</span></span>` : ''}
+                        </div>
+                    `;
+                }
+
+                conditionsHtml += '</div>';
+                conditionsDiv.innerHTML = conditionsHtml;
+            })
+            .catch(err => {
+                summaryDiv.innerHTML = `<span style="color: #ff4757;">❌ 请求失败: ${err}</span>`;
+            });
+        }
+
+        // 设置默认时间（最近2天）
+        function setDefaultBacktestTime() {
+            const now = new Date();
+            const end = now.toISOString().slice(0, 16).replace('T', ' ');
+            const start = new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16).replace('T', ' ');
+            document.getElementById('backtest_start').value = start.slice(0, 10) + ' 00:00:00';
+            document.getElementById('backtest_end').value = end.slice(0, 10) + ' 00:00:00';
+        }
+        setDefaultBacktestTime();
+    </script>
+</body>
+</html>
