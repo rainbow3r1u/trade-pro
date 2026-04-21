@@ -20,6 +20,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from flask import Flask, render_template, jsonify, Response, send_file, request
 from flask_socketio import SocketIO, emit
+from utils.websocket_manager import ws_manager
 from flask_compress import Compress
 
 import sys
@@ -46,6 +47,29 @@ app.template_folder = str(Path(__file__).parent / 'templates')
 app.static_folder = str(config.STATIC_DIR)
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# ========== /realtime WebSocket Namespace ==========
+@socketio.on('connect', namespace='/realtime')
+def on_realtime_connect():
+    logger.info('浏览器连接 /realtime')
+
+@socketio.on('subscribe_positions', namespace='/realtime')
+def on_subscribe_positions(data):
+    symbols = data.get('symbols', [])
+    if symbols:
+        ws_manager.subscribe_symbol(symbols[0])
+    else:
+        ws_manager.update_subscriptions([])
+    emit('subscribed', {'status': 'ok'})
+
+@socketio.on('unsubscribe_all', namespace='/realtime')
+def on_unsubscribe_all():
+    ws_manager.update_subscriptions([])
+
+@socketio.on('disconnect', namespace='/realtime')
+def on_realtime_disconnect():
+    logger.info('浏览器断开 /realtime')
+
 
 def _build_report_from_signals(strategy_name: str, items: list) -> Dict[str, Any]:
     """从信号列表构建报告结构"""

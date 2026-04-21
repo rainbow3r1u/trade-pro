@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  crypto-scanner-5000:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: crypto-scanner:5000
+    container_name: crypto-scanner-5000
+    ports:
+      - "5003:5000"
+    volumes:
+      # 环境变量文件（只读）
+      - ./.env:/home/ubuntu/crypto-scanner/.env:ro
+      # 数据持久化
+      - ./data:/home/ubuntu/crypto-scanner/data
+      - ./output:/home/ubuntu/crypto-scanner/output
+      - ./logs:/home/ubuntu/crypto-scanner/logs
+      - ./configs:/home/ubuntu/crypto-scanner/configs
+      # 快照文件共享（web 服务写入，外部可能需要读取）
+      - /var/www/market_snapshot.json:/var/www/market_snapshot.json
+    restart: unless-stopped
+    environment:
+      - MARKET_HOST=http://localhost:5000
+    # 如需限制资源可取消下面注释
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2G

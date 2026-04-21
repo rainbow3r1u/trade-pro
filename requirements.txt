@@ -1,13 +1,14 @@
 flask>=2.0
 flask-socketio>=5.0
 pandas>=1.5
+pyarrow>=12.0
 numpy>=1.21
 ccxt>=2.0
-qcloud_cos>=5.0
-qcloud-cos>=5.0
+cos_python_sdk_v5>=1.9
 python-dotenv>=1.0
 matplotlib>=3.5
 openai>=1.0
 websockets>=10.0
+websocket-client>=1.0
 requests>=2.28
 flask-compress>=1.24
