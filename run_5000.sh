@@ -16,5 +16,5 @@ threading.Thread(target=minute_aggregator_loop, daemon=True).start()
 threading.Thread(target=daily_open_price_update_loop, daemon=True).start()
 threading.Thread(target=hyperliquid_backfill_loop, daemon=True).start()
 threading.Thread(target=sim_trade_broadcast_loop, daemon=True).start()
-socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True, log_output=False)
+socketio.run(app, host='0.0.0.0', port=5003, debug=False, allow_unsafe_werkzeug=True, log_output=False)
 "

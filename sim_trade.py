@@ -2,7 +2,7 @@
 """
 模拟自动交易系统 v2 - 多仓位版本
 功能：
-- 轮询5000端口策略信号
+- 轮询5003端口策略信号
 - 支持最多5个同时持仓
 - 信号优先级仓位分配
 - 包含止盈、止损、爆仓逻辑
@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv('/home/ubuntu/crypto-scanner/.env')
 
 # ========== 配置 ==========
-HOST = os.environ.get('MARKET_HOST', 'http://localhost:5000')
+HOST = os.environ.get('MARKET_HOST', 'http://localhost:5003')
 API_TIMEOUT = 10
 
 # 模拟账户配置

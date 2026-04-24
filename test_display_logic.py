@@ -17,7 +17,7 @@ print("   后端API: /api/bollinger_climb")
 print("\n2. 连续测试API响应（模拟30秒间隔）:")
 for i in range(3):
     try:
-        resp = requests.get("http://localhost:5000/api/bollinger_climb", timeout=5)
+        resp = requests.get("http://localhost:5003/api/bollinger_climb", timeout=5)
         data = resp.json()
 
         current_time = datetime.now().strftime("%H:%M:%S")
@@ -79,5 +79,5 @@ print("3. 条件驱动: 信号显示时长取决于条件满足时长")
 print("4. 实时更新: 信号出现/消失实时反映在页面上")
 print("5. 历史可见: 在条件满足期间，信号持续可见")
 
-print("\n访问地址: http://localhost:5000/")
+print("\n访问地址: http://localhost:5003/")
 print("查看'📈 布林爬坡预警'面板")

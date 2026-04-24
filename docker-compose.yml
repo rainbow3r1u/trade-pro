@@ -1,14 +1,14 @@
 version: '3.8'
 
 services:
-  crypto-scanner-5000:
+  crypto-scanner-5003:
     build:
       context: .
       dockerfile: Dockerfile
-    image: crypto-scanner:5000
-    container_name: crypto-scanner-5000
+    image: crypto-scanner:5003
+    container_name: crypto-scanner-5003
     ports:
-      - "5003:5000"
+      - "5003:5003"
     volumes:
       # 环境变量文件（只读）
       - ./.env:/home/ubuntu/crypto-scanner/.env:ro
@@ -21,7 +21,7 @@ services:
       - /var/www/market_snapshot.json:/var/www/market_snapshot.json
     restart: unless-stopped
     environment:
-      - MARKET_HOST=http://localhost:5000
+      - MARKET_HOST=http://localhost:5003
     # 如需限制资源可取消下面注释
     # deploy:
     #   resources:

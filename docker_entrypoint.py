@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Docker 入口：同时启动 5000 端口 Web 服务 + 模拟交易脚本
+Docker 入口：同时启动 5003 端口 Web 服务 + 模拟交易脚本
 """
 import subprocess
 import sys
@@ -34,7 +34,7 @@ if __name__ == "__main__":
     os.chdir("/home/ubuntu/crypto-scanner")
 
     # 1. 启动 Web 服务
-    print("[Entrypoint] Starting web service (port 5000)...")
+    print("[Entrypoint] Starting web service (port 5003)...")
     web_proc = subprocess.Popen([sys.executable, "run_web.py"])
     processes.append(web_proc)
 

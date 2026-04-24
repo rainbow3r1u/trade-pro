@@ -10,7 +10,7 @@ symbols_to_check = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'ADAUSDT', 'DOGEUSDT', 'XRP
 
 for symbol in symbols_to_check:
     try:
-        resp = requests.get(f"http://localhost:5000/api/minute_buy_ratio/{symbol}", timeout=5)
+        resp = requests.get(f"http://localhost:5003/api/minute_buy_ratio/{symbol}", timeout=5)
         data = resp.json()
         if data.get('data'):
             klines = data['data']
@@ -30,7 +30,7 @@ for symbol in symbols_to_check:
 # 检查是否有突增检测信号（delta_q突增）
 print("\n=== 检查delta_q突增信号 ===")
 try:
-    resp = requests.get("http://localhost:5000/api/surge", timeout=5)
+    resp = requests.get("http://localhost:5003/api/surge", timeout=5)
     data = resp.json()
     print(f"突增信号数量: {data.get('count', 0)}")
     if data.get('data'):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Docker 内启动 5000 端口 Web 服务（带 eventlet monkey_patch）
+Docker 内启动 5003 端口 Web 服务（带 eventlet monkey_patch）
 """
 import eventlet
 eventlet.monkey_patch()
@@ -8,8 +8,8 @@ eventlet.monkey_patch()
 import sys
 import os
 
-sys.path.insert(0, '/home/ubuntu/crypto-scanner')
-os.chdir('/home/ubuntu/crypto-scanner')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 from market_monitor_app import (
     app, socketio, init_market_data,
@@ -46,7 +46,7 @@ threading.Thread(target=bollinger_climb_background_loop, daemon=True).start()
 socketio.run(
     app,
     host='0.0.0.0',
-    port=5000,
+    port=5003,
     debug=False,
     allow_unsafe_werkzeug=True,
     log_output=False

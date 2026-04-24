@@ -8,7 +8,7 @@ print("=== 测试布林爬坡检测 ===")
 
 # 1. 获取布林爬坡信号
 try:
-    resp = requests.get("http://localhost:5000/api/bollinger_climb", timeout=10)
+    resp = requests.get("http://localhost:5003/api/bollinger_climb", timeout=10)
     data = resp.json()
     print(f"API返回: count={data.get('count', 0)}, candidate_count={data.get('candidate_count', 0)}")
 
@@ -28,7 +28,7 @@ except Exception as e:
 # 2. 获取调试信息
 print("\n=== 调试信息 ===")
 try:
-    resp = requests.get("http://localhost:5000/api/debug_state", timeout=10)
+    resp = requests.get("http://localhost:5003/api/debug_state", timeout=10)
     debug = resp.json()
     print(f"小时K线缓存币种数: {debug.get('hourly_cache_symbol_count', 0)}")
     print(f"布林回填完成: {debug.get('bb_backfill_done', False)}")
@@ -46,7 +46,7 @@ except Exception as e:
 print("\n=== 测试单个币种数据 ===")
 try:
     # 获取一个币种的小时K线数据（通过分钟K线聚合）
-    resp = requests.get("http://localhost:5000/api/minute_buy_ratio/BTCUSDT", timeout=10)
+    resp = requests.get("http://localhost:5003/api/minute_buy_ratio/BTCUSDT", timeout=10)
     btc_data = resp.json()
     print(f"BTCUSDT分钟数据: {btc_data.get('count', 0)} 条")
 

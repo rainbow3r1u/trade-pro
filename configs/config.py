@@ -42,7 +42,7 @@ DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
 
 # Web
 WEB_HOST = os.environ.get('WEB_HOST', '0.0.0.0')
-WEB_PORT = int(os.environ.get('WEB_PORT', 5000))
+WEB_PORT = int(os.environ.get('WEB_PORT', 5003))
 
 # 数据库
 DB_PATH = os.environ.get('DB_PATH', str(DATA_DIR / 'signals.db'))
