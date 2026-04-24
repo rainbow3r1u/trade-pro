@@ -2478,21 +2478,11 @@ def _update_hourly_cache_for_hour(hour_ts: int):
     market_data["hourly_kline_cache"] = hourly_cache
 
 def minute_aggregator_loop():
-    """每分钟触发聚合，并上传COS"""
-    last_save_time = time.time()
+    """每分钟触发聚合，并上传COS（每次聚合完立即上传）"""
     last_check_minute = None
     
     while True:
         time.sleep(1)
-        
-        # 每5分钟上传一次COS（必须在continue之前）
-        if time.time() - last_save_time >= 300:
-            print(f"[COS] 5分钟定时上传触发")
-            with data_lock:
-                klines_copy = dict(market_data["minute_klines"])
-            save_minute_klines_to_cos(klines_copy)
-            _save_hourly_cache_to_cos()
-            last_save_time = time.time()
         
         current_minute = get_current_minute_ts()
         
@@ -2539,6 +2529,25 @@ def minute_aggregator_loop():
                         h for h in market_data["hourly_kline_cache"][symbol]
                         if h.get("t", 0) >= hour_cutoff
                     ]
+
+            # 每分钟聚合后立即上传COS分钟K线
+            with data_lock:
+                klines_copy = dict(market_data["minute_klines"])
+            save_minute_klines_to_cos(klines_copy)
+            _save_hourly_cache_to_cos()
+
+            # 同时上传最新行情快照到COS（供API从COS读取）
+            with data_lock:
+                snap = {
+                    "symbols": dict(market_data.get("symbols", {})),
+                    "vol_24h_today": dict(market_data.get("vol_24h_today", {})),
+                    "vol_15m_last": dict(market_data.get("vol_15m_last", {})),
+                    "vol_15m_avg_4h": dict(market_data.get("vol_15m_avg_4h", {})),
+                    "updated_at": time.time()
+                }
+            save_symbols_snapshot_to_cos()
+            save_vol_24h_today_to_cos()
+            save_today_open_prices_to_cos()
 
 # ========== 定时写入 ==========
 def write_loop():
