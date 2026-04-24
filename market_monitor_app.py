@@ -3045,4 +3045,11 @@ if __name__ == "__main__":
     print(f"分钟K线存储: COS ({COS_KEY})")
     print(f"delta_q突增阈值: {DELTA_Q_SURGE_THRESHOLD/1e6:.1f}M USDT")
     print("=" * 50)
+    import sys
+    print("=" * 50, file=sys.stderr)
+    print(f"行情监控服务启动: http://0.0.0.0:{PORT}", file=sys.stderr)
+    print(f"分钟K线存储: COS ({COS_KEY})", file=sys.stderr)
+    print(f"delta_q突增阈值: {DELTA_Q_SURGE_THRESHOLD/1e6:.1f}M USDT", file=sys.stderr)
+    print("=" * 50, file=sys.stderr)
+    sys.stderr.flush()
     socketio.run(app, host="0.0.0.0", port=PORT, debug=False, allow_unsafe_werkzeug=True)
