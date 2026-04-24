@@ -11,7 +11,7 @@ import json
 from dotenv import load_dotenv
 
 # 加载 .env 文件（与5002端口共享COS凭证）
-load_dotenv('/home/ubuntu/crypto-scanner/.env')
+load_dotenv()
 import time
 import threading
 from datetime import datetime, timedelta, timezone
