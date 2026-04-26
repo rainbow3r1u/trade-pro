@@ -63,7 +63,7 @@ VOL_SURGE_ENABLED = True       # 启用15分钟成交量突增信号（第一优
 BB_MIN_CONSECUTIVE_HOURS = 2   # 布林爬坡最少连续小时数
 BB_CANDIDATE_MIN_HOURS = 2     # 布林候选最少蓄力小时数（已禁用）
 SURGE_MIN_DELTA_Q = 1_000_000  # delta_q突增最小值（USDT），100万
-SURGE_MIN_BUY_RATIO = 0.70     # delta_q突增最小买入比（70%）
+SURGE_MIN_BUY_RATIO = 0.80     # delta_q突增最小买入比（80%）
 VOL_SURGE_MIN_RATIO = 3.0      # 15分钟成交量突增最小倍数（与monitor一致）
 MIN_24H_VOLUME = 3_000_000   # 24小时成交额最低门槛（300万USDT）
 

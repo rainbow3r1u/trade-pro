@@ -2077,7 +2077,7 @@ def api_minute_buy_ratio(symbol: str):
 
 @app.route("/api/surge")
 def api_surge():
-    """返回delta_q突增的币种列表（仅买>=70%）"""
+    """返回delta_q突增的币种列表（仅买>=80%）"""
     with data_lock:
         surge_cache = market_data.get("surge_cache", {})
     
@@ -2089,8 +2089,8 @@ def api_surge():
         if recent:
             total_delta_q = sum(r["delta_q"] for r in recent)
             avg_buy_ratio = sum(r["buy_ratio"] for r in recent) / len(recent)
-            # 大单追踪：只显示买>=70%（买方主导才显示）
-            if avg_buy_ratio >= 0.7:
+            # 大单追踪：只显示买>=80%（买方主导才显示）
+            if avg_buy_ratio >= 0.8:
                 result.append({
                     "symbol": symbol,
                     "count": len(recent),
@@ -2365,9 +2365,9 @@ def ws_update_loop():
                         
                         ms["last_price"] = price
                         
-                        # ===== delta_q 突增检测（仅买方主导>=70%）=====
+                        # ===== delta_q 突增检测（仅买方主导>=80%）=====
                         if delta_q > DELTA_Q_SURGE_THRESHOLD and symbol not in SURGE_EXCLUDE_SYMBOLS:
-                            if buy_ratio >= 0.7:
+                            if buy_ratio >= 0.8:
                                 if symbol not in market_data["surge_cache"]:
                                     market_data["surge_cache"][symbol] = []
                                 market_data["surge_cache"][symbol].append({
