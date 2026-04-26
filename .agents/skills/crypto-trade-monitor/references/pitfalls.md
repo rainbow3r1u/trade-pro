@@ -79,6 +79,7 @@
 7. **不要** 恢复"单个仓位爆仓价触发强平"——联合保证金模式下，只有 `total_equity <= 0` 才全部强平，不设单个爆仓价
 8. **不要** 让 `close_position()` 对 `LIQUIDATED`（单个）调用 `handle_liquidation()`——只有 `LIQUIDATED_CROSS`（联合）才重置账户
 9. **不要** 在联合爆仓时逐条打印 `[平仓] LIQUIDATED_CROSS`——应打印 `[联合爆仓强平]` 以区分普通平仓
+10. **用户明确指令：未经同意不得重置交易功能**——包括账户重置、持仓清空、state.json重置、核心交易逻辑修改。必须先告知影响范围并征得用户确认。
 
 **已修复的历史误解**：
 此前日志显示 `[平仓] LIQUIDATED ORCAUSDT`，让人误以为只有ORCAUSDT被爆仓。实际是联合爆仓，所有仓位（PEPEUSDT、HIGHUSDT、ORCAUSDT等）一起被强平，只是日志输出格式误导。
