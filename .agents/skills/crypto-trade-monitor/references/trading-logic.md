@@ -248,6 +248,44 @@ def close_weakest_position():
 
 **日志**：`[VOL_SURGE替换] 满仓且有N个高倍突增信号(ratio>=5.0)，替换最弱持仓`
 
+### 现货/合约阴阳质检（SPOT_FUTURES_DIVERGENCE）
+
+**目的**: 极端行情下，币安现货与U本位永续合约的1h K线可能出现阴阳不一致。基于现货数据开仓后，若合约实际走势与现货方向相反，需要立即纠错平仓。
+
+**触发时机**: `open_position()` 成功开仓后**立即执行**，一次性质检，查完即结束。
+
+**逻辑**:
+```python
+def check_spot_futures_divergence_once(symbol: str) -> bool:
+    # 1. 同时查询现货和合约各3根1h K线
+    spot = requests.get("https://api.binance.com/api/v3/klines", 
+                        params={"symbol": symbol, "interval": "1h", "limit": 3})
+    futures = requests.get("https://fapi.binance.com/fapi/v1/klines",
+                           params={"symbol": symbol, "interval": "1h", "limit": 3})
+    
+    # 2. 只取前两根（最近两根已完成K线），忽略第三根（进行中）
+    for i in range(2):
+        spot_bullish = float(spot[i][4]) > float(spot[i][1])      # 阳?
+        futures_bullish = float(futures[i][4]) > float(futures[i][1])  # 阳?
+        
+        # 3. 只看阴阳方向，不看具体数值差异
+        if spot_bullish != futures_bullish:
+            return True  # 不一致，应平仓
+    
+    return False
+```
+
+**处理**:
+- 若返回 `True` → 立即 `close_position(pos, "SPOT_FUTURES_DIVERGENCE", entry_price, 0)`
+- `open_position()` 返回 `False`（仓位已被平掉）
+- 不触发冷却期（不是止损）
+
+**关键约束**:
+- 只查已持仓币种（最多5个），无REST限流压力
+- 只看阴阳方向（`close > open` 还是 `close < open`），不看价格数值差距
+- 只检查已完成的最近2根K线，忽略进行中K线
+- 一次性质检，不保存状态，不轮询
+
 ### 联合保证金爆仓
 
 ```python

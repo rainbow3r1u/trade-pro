@@ -324,6 +324,62 @@ def format_price(price: float) -> str:
     else:
         return f"{price:.2f}"
 
+def check_spot_futures_divergence_once(symbol: str) -> bool:
+    """
+    检查现货与合约最近两根已完成1h K线的阴阳方向是否不一致。
+    只看阴阳状态（close > open 还是 close < open），不看具体数值差异。
+    返回True表示应平仓（任意一根不一致）。
+    此函数只调用一次，不保存任何状态。
+    """
+    try:
+        # 查询现货K线
+        spot_resp = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": symbol, "interval": "1h", "limit": 3},
+            timeout=5
+        )
+        if spot_resp.status_code != 200:
+            return False
+        
+        # 查询合约K线
+        futures_resp = requests.get(
+            "https://fapi.binance.com/fapi/v1/klines",
+            params={"symbol": symbol, "interval": "1h", "limit": 3},
+            timeout=5
+        )
+        if futures_resp.status_code != 200:
+            return False
+        
+        spot_klines = spot_resp.json()
+        futures_klines = futures_resp.json()
+        
+        if len(spot_klines) < 2 or len(futures_klines) < 2:
+            return False
+        
+        # 只检查前两根（最近两根已完成K线），忽略第三根（进行中）
+        for i in range(2):
+            spot_open = float(spot_klines[i][1])
+            spot_close = float(spot_klines[i][4])
+            futures_open = float(futures_klines[i][1])
+            futures_close = float(futures_klines[i][4])
+            
+            spot_bullish = spot_close > spot_open   # True=阳, False=阴
+            futures_bullish = futures_close > futures_open  # True=阳, False=阴
+            
+            # 阴阳方向不一致
+            if spot_bullish != futures_bullish:
+                spot_dir = "阳" if spot_bullish else "阴"
+                futures_dir = "阳" if futures_bullish else "阴"
+                print(f"[阴阳质检] {symbol} 第{i+1}根K线不一致: 现货{spot_dir} vs 合约{futures_dir}")
+                return True
+        
+        return False
+        
+    except Exception as e:
+        print(f"[阴阳质检错误] {symbol}: {e}")
+        return False
+
+
 def get_recent_klines(symbol: str, minutes: int = 60) -> list:
     data = api_get(f"/api/minute_buy_ratio/{symbol}")
     klines = data.get("data", [])
@@ -497,6 +553,12 @@ def open_position(symbol: str, signal_type: str, entry_price: float,
         detail_str = " | " + ", ".join(f"{k}={v}" for k, v in signal_detail.items())
     print(f"[开仓] {symbol} @ {format_price(entry_price)} | {signal_type}{detail_str}")
     print(f"       保证金: {margin:.1f} USDT ({margin/BASE_MARGIN*100:.0f}%仓) | 止损: {format_price(stop_loss_price)}({stop_loss_source}) | 止盈: {format_price(take_profit_price)}")
+    
+    # 新增: 开仓后立即做一次现货/合约阴阳质检
+    if check_spot_futures_divergence_once(symbol):
+        print(f"[阴阳质检] {symbol} 现货/合约K线阴阳不一致，立即平仓")
+        close_position(pos, "SPOT_FUTURES_DIVERGENCE", entry_price, 0)
+        return False
     
     return True
 

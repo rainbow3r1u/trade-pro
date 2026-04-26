@@ -90,6 +90,14 @@ if total_equity <= 0 and positions:
 - 平仓原因：`REPLACE_VOL_SURGE`（不触发冷却期）
 - 替换后腾出仓位继续开 VOL_SURGE
 
+## 现货/合约阴阳质检
+
+开仓后立即执行一次性质检：
+- 查询该币种现货(`api.binance.com`) + 合约(`fapi.binance.com`)各3根1h K线
+- 只比对最近2根**已完成**K线的阴阳方向（`close > open` 还是 `close < open`）
+- 任意1根不一致 → 立即以 `SPOT_FUTURES_DIVERGENCE` 平仓
+- 不看具体价格数值，不保存状态，不轮询
+
 ## 文件职责索引
 
 | 文件 | 职责 |
