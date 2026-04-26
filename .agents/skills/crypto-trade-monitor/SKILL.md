@@ -113,3 +113,4 @@ if total_equity <= 0 and positions:
 - **[trading-logic](references/trading-logic.md)** — 策略算法详细定义、开平仓流程、止盈止损计算
 - **[data-format](references/data-format.md)** — K线字段映射、成交量口径、缓存限制、WebSocket消息格式
 - **[pitfalls](references/pitfalls.md)** — 已知Bug与陷阱、历史修改记录、常见异常原因
+- **[real-trading-transition](references/real-trading-transition.md)** — 模拟交易升级实盘完整方案（二次信号过滤、合约API执行、风控熔断、分阶段上线）
