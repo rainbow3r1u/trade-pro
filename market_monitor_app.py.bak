@@ -5,6 +5,9 @@
 功能: REST API拉全量 + WebSocket实时更新 + 分钟K线聚合
 新增: 主动买卖估算(delta_q + buy_ratio + 买卖成交额)
 """
+import eventlet
+eventlet.monkey_patch()
+
 import os
 import io
 import json
@@ -15,14 +18,14 @@ load_dotenv()
 import time
 import threading
 from datetime import datetime, timedelta, timezone
-from flask import Flask, render_template, jsonify, request, make_response
+from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO
 import requests
 import pandas as pd
 
 # ========== 配置 ==========
 PORT = 5003
-BINANCE_API = "https://api.binance.com"
+BINANCE_API = "https://fapi.binance.com"
 HYPERLIQUID_API = "https://api.hyperliquid.xyz/info"
 SNAPSHOT_FILE = "/var/www/market_snapshot.json"
 WRITE_INTERVAL_SECONDS = 900  # 15分钟写一次快照
@@ -71,10 +74,6 @@ BB_CLIMB_CONFIG = {
     "candidate_vol_ratio": 0.5,
 }
 
-# 内存限制配置（Phase 1）
-MAX_MINUTE_KLINES_PER_SYMBOL = 120   # 每个币种只保留最近120条分钟K线（2小时）
-MAX_HOURLY_KLINES_PER_SYMBOL = 36    # 每个币种只保留最近36根1h K线（36小时）
-
 # ========== 布林爬坡缓存 ==========
 _bb_climb_cache = {
     "results": [],
@@ -104,19 +103,15 @@ market_data = {
     "vol_15m_history": {},              # {symbol: {slot_ts: vol}} 最近16个15分钟成交额历史(4小时)，从COS加载
     "vol_15m_avg_4h": {},               # {symbol: avg_vol} 前4小时的15分钟均值
     "vol_24h_today": {},                # {symbol: today_volume} 今日累计成交额（北京时间8点起）
-    "vol_surge_symbols": {},            # {symbol: {start_time, ratio, vol}} 突增币种记录（5分钟有效期，给交易脚本用）
-    "vol_surge_history": {},            # {symbol: {start_time, ratio, vol}} 突增历史记录（1小时，给前端展示用）
-    # 追涨追踪器（涨幅5%~10%的币，追踪到10%需要多少成交量）
-    "momentum_tracker": {},             # {symbol: {entry_time, entry_price, entry_gain_pct, target_gain_pct, current_price, current_gain_pct, vol_24h_today, vol_needed, elapsed_seconds, status}}
+    "vol_surge_symbols": {},            # {symbol: {start_time, ratio, vol}} 突增币种记录
 }
 data_lock = threading.Lock()
 
 # ========== Flask ==========
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "market-monitor-2024"
-app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.template_folder = os.path.join(os.path.dirname(__file__), "templates")
-socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*", ping_timeout=60, ping_interval=25)
+socketio = SocketIO(app, cors_allowed_origins="*", ping_timeout=60, ping_interval=25)
 
 
 # ========== 全局 HTTP Session ==========
@@ -146,7 +141,7 @@ def get_cos_client():
 def fetch_24h_snapshot() -> list:
     """REST API拉取全量24h数据"""
     try:
-        resp = _requests_session.get(f"{BINANCE_API}/api/v3/ticker/24hr", timeout=30)
+        resp = _requests_session.get(f"{BINANCE_API}/fapi/v1/ticker/24hr", timeout=30)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -351,7 +346,7 @@ def init_market_data():
         # 即使从COS加载了，仍需要获取trading_symbols白名单
         trading_symbols = set()
         try:
-            resp = _requests_session.get(f"{BINANCE_API}/api/v3/exchangeInfo", timeout=30)
+            resp = _requests_session.get(f"{BINANCE_API}/fapi/v1/exchangeInfo", timeout=30)
             resp.raise_for_status()
             for s in resp.json().get("symbols", []):
                 if s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING":
@@ -381,7 +376,7 @@ def init_market_data():
     # 从exchangeInfo获取TRADING状态的币种白名单
     trading_symbols = set()
     try:
-        resp = _requests_session.get(f"{BINANCE_API}/api/v3/exchangeInfo", timeout=30)
+        resp = _requests_session.get(f"{BINANCE_API}/fapi/v1/exchangeInfo", timeout=30)
         resp.raise_for_status()
         for s in resp.json().get("symbols", []):
             if s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING":
@@ -515,7 +510,7 @@ def _fetch_beijing_8am_klines(symbols: list, beijing_8am_ts: int) -> dict:
                 "startTime": beijing_8am_ms,
                 "limit": 1
             }
-            resp = _requests_session.get(f"{BINANCE_API}/api/v3/klines", params=params, timeout=5)
+            resp = _requests_session.get(f"{BINANCE_API}/fapi/v1/klines", params=params, timeout=5)
             
             if resp.status_code == 200:
                 klines = resp.json()
@@ -595,29 +590,11 @@ def get_current_15m_slot():
     """获取当前15分钟区间的时间戳"""
     return int(time.time()) // 900 * 900  # 900秒 = 15分钟
 
-# 稳定币对（价格波动极小，排除）
-STABLECOIN_PAIRS = {
-    'USDCUSDT', 'RLUSDUSDT', 'UUSDT', 'XUSDUSDT', 'USD1USDT',
-    'FDUSDUSDT', 'TUSDUSDT', 'PAXUSDT', 'BUSDUSDT', 'SUSDUSDT',
-}
-
-VOL_SURGE_MIN_AVG_VOL = 5_000  # 前4小时均值最低门槛 5000 USDT，避免极小均值产生极端ratio
-
-def check_volume_surge(symbol: str, current_15m_vol: float, avg_4h_vol: float, gain_pct: float = 0):
+def check_volume_surge(symbol: str, current_15m_vol: float, avg_4h_vol: float):
     """检测15分钟成交量突增
     current_15m_vol: 当前完成的15分钟成交额
     avg_4h_vol: 前4小时的15分钟平均成交额（滑动窗口均值）
-    gain_pct: 当前价格相对今日开盘的涨跌幅（%），只做多上涨的
     """
-    # 过滤稳定币
-    if symbol in STABLECOIN_PAIRS:
-        return False
-    # 过滤下跌的（放量下跌不做多）
-    if gain_pct <= 0:
-        return False
-    # 均值下限，避免极端ratio
-    if avg_4h_vol < VOL_SURGE_MIN_AVG_VOL:
-        return False
     if avg_4h_vol > 0 and current_15m_vol > avg_4h_vol * 3.0:
         surge_info = {
             "start_time": time.time(),
@@ -627,33 +604,20 @@ def check_volume_surge(symbol: str, current_15m_vol: float, avg_4h_vol: float, g
             "avg_4h_vol": avg_4h_vol         # 前4小时均值
         }
         market_data["vol_surge_symbols"][symbol] = surge_info
-        # 同时写入历史记录（1小时展示用），若已存在则更新为最新
-        market_data["vol_surge_history"][symbol] = surge_info.copy()
         print(f"[VOL_SURGE] {symbol} 15分钟成交量突增: 当前{current_15m_vol/1e3:.1f}K vs 前4h均值{avg_4h_vol/1e3:.1f}K ({surge_info['ratio']:.2f}x)")
         return True
     return False
 
 def cleanup_surge_records():
-    """清理超过5分钟的突增记录（交易脚本用）"""
+    """清理超过1小时的突增记录"""
     now = time.time()
     expired = []
     for symbol, info in market_data.get("vol_surge_symbols", {}).items():
-        if now - info.get("start_time", 0) > 300:  # 5分钟
+        if now - info.get("start_time", 0) > 3600:  # 1小时
             expired.append(symbol)
     for symbol in expired:
         del market_data["vol_surge_symbols"][symbol]
         print(f"[VOL_SURGE] {symbol} 突增记录已过期，移除")
-
-def cleanup_vol_surge_history():
-    """清理超过1小时的突增历史记录（前端展示用）"""
-    now = time.time()
-    expired = []
-    for symbol, info in market_data.get("vol_surge_history", {}).items():
-        if now - info.get("start_time", 0) > 3600:  # 1小时
-            expired.append(symbol)
-    for symbol in expired:
-        del market_data["vol_surge_history"][symbol]
-        print(f"[VOL_SURGE] {symbol} 历史展示记录已过期，移除")
 
 def fetch_today_open_prices():
     """从币安API获取今日北京时间0点的开盘价（只取成交额前100的币）"""
@@ -686,7 +650,7 @@ def fetch_today_open_prices():
                 "startTime": today_start_ms,
                 "limit": 1
             }
-            resp = _requests_session.get(f"{BINANCE_API}/api/v3/klines", params=params, timeout=5)
+            resp = _requests_session.get(f"{BINANCE_API}/fapi/v1/klines", params=params, timeout=5)
             if resp.status_code == 200:
                 klines = resp.json()
                 if klines:
@@ -750,11 +714,6 @@ def load_minute_klines_from_cos():
                         r['q'] = r.pop('quote_volume')
                     klines_dict[symbol] = records
 
-                # 截断：只保留最近120条，避免加载过多历史数据到内存
-                for symbol in klines_dict:
-                    if len(klines_dict[symbol]) > MAX_MINUTE_KLINES_PER_SYMBOL:
-                        klines_dict[symbol] = klines_dict[symbol][-MAX_MINUTE_KLINES_PER_SYMBOL:]
-                print(f"截断后保留每个币种最近 {MAX_MINUTE_KLINES_PER_SYMBOL} 条分钟K线")
                 return klines_dict
     except Exception as e:
         print(f"COS加载失败: {e}")
@@ -780,11 +739,6 @@ def load_minute_klines_from_cos():
                     r['q'] = r.pop('quote_volume')
                 klines_dict[symbol] = records
             
-            # 截断：只保留最近120条
-            for symbol in klines_dict:
-                if len(klines_dict[symbol]) > MAX_MINUTE_KLINES_PER_SYMBOL:
-                    klines_dict[symbol] = klines_dict[symbol][-MAX_MINUTE_KLINES_PER_SYMBOL:]
-            print(f"本地加载截断后保留每个币种最近 {MAX_MINUTE_KLINES_PER_SYMBOL} 条分钟K线")
             return klines_dict
     except Exception as e:
         print(f"本地文件加载失败: {e}")
@@ -959,20 +913,13 @@ def load_vol_15m_from_cos(end_slot: int, slots_count: int = 16) -> dict:
     return result
 
 def calc_vol_15m_avg_strict(symbol: str, current_slot: int, history: dict) -> float:
-    """计算15分钟均值：分母用实际非零slot数，最少要求4个slot"""
+    """严格4小时时间窗口计算15分钟均值（分母恒为16，缺失补0）"""
     total = 0.0
-    count = 0
     symbol_hist = history.get(symbol, {})
     for i in range(1, 17):
         ts = current_slot - i * 900
-        val = symbol_hist.get(ts, 0.0)
-        if val > 0:
-            total += val
-            count += 1
-    min_slots = 4
-    if count < min_slots:
-        return 0.0  # 数据不足，不计算均值
-    return total / count
+        total += symbol_hist.get(ts, 0.0)
+    return total / 16.0
 
 
 
@@ -1245,28 +1192,22 @@ CATEGORY_MAP = {
 
 def get_table_data():
     """获取表格数据（排序后）"""
-    acquired = data_lock.acquire(timeout=5.0)
-    if not acquired:
-        return []
-    try:
+    with data_lock:
         # 深拷贝避免遍历期间被其他线程修改
         symbols = dict(market_data["symbols"])
         vol_15m_last = dict(market_data.get("vol_15m_last", {}))
         vol_24h_today = dict(market_data.get("vol_24h_today", {}))
         vol_15m_avg_4h = dict(market_data.get("vol_15m_avg_4h", {}))
-        vol_15m_current = dict(market_data.get("vol_15m_current", {}))
-        today_open_prices = dict(market_data.get("today_open_prices", {}))
-    finally:
-        data_lock.release()
     
     current_minute = int(time.time()) // 60 * 60
 
     rows = []
     for symbol, info in symbols.items():
         price = info["price"]
-        o = today_open_prices.get(symbol, 0)
-        if o <= 0:
-            o = info.get("o", 0)
+        o = info["o"]
+        open_price = get_beijing_midnight_open_price(symbol, info)
+        if open_price > 0:
+            o = open_price
         gain_pct = (price - o) / o * 100 if o > 0 else 0
 
         cat_name, cat_type = CATEGORY_MAP.get(symbol, (None, None))
@@ -1280,16 +1221,12 @@ def get_table_data():
         # 获取上一个完整15分钟成交额；如果缺失，回退到当前正在累加的15分钟值
         current_15m = vol_15m_last.get(symbol, 0)
         if current_15m == 0:
-            current_15m = vol_15m_current.get(symbol, 0)
+            current_15m = market_data.get("vol_15m_current", {}).get(symbol, 0)
         
-        # 检查是否突增：使用与 check_volume_surge 一致的阈值 3.0x
-        VOL_SURGE_THRESHOLD = 3.0
+        # 检查是否突增：当前15分钟 > 前4小时均值 × 3.0
         is_surge = False
         surge_ratio = 0
-        if (vol_15m_avg >= VOL_SURGE_MIN_AVG_VOL 
-            and current_15m > vol_15m_avg * VOL_SURGE_THRESHOLD
-            and symbol not in STABLECOIN_PAIRS
-            and gain_pct > 0):
+        if vol_15m_avg > 0 and current_15m > vol_15m_avg * 3.0:
             is_surge = True
             surge_ratio = current_15m / vol_15m_avg
 
@@ -1332,7 +1269,7 @@ def _fetch_single_hourly_klines(symbol: str) -> list | None:
     for attempt in range(max_retries):
         try:
             resp = _requests_session.get(
-                f"{BINANCE_API}/api/v3/klines",
+                f"{BINANCE_API}/fapi/v1/klines",
                 params={"symbol": symbol, "interval": "1h", "limit": 25},
                 timeout=10
             )
@@ -1525,11 +1462,6 @@ def _load_hourly_cache_from_cos():
                     'buy_ratio': float(r.get('buy_ratio', 0.5)),
                 })
             cache[symbol] = hklines
-        # 截断：只保留最近36根（36小时）
-        for symbol in cache:
-            if len(cache[symbol]) > MAX_HOURLY_KLINES_PER_SYMBOL:
-                cache[symbol] = cache[symbol][-MAX_HOURLY_KLINES_PER_SYMBOL:]
-        print(f"[HOURLY-COS] 截断后保留每个币种最近 {MAX_HOURLY_KLINES_PER_SYMBOL} 根1h K线")
         return cache
     except Exception as e:
         print(f"[HOURLY-COS] 加载失败: {e}")
@@ -1652,23 +1584,6 @@ def _check_hour_climb(k: dict, middle: float, upper: float, avg_vol: float, cfg:
     return True
 
 
-def _compute_rolling_bb(closes: list, period: int, std_mult: float) -> tuple[list, list]:
-    """预计算滚动布林带（中轨和上轨数组），避免固定窗口偏差
-    
-    返回: (mids, uppers) 长度 = len(closes) - period + 1
-    mids[0] 对应对 hourly_klines[period-1] 的布林带
-    """
-    mids = []
-    uppers = []
-    for i in range(period - 1, len(closes)):
-        window = closes[i - period + 1:i + 1]
-        mid = sum(window) / period
-        std = (sum((c - mid) ** 2 for c in window) / period) ** 0.5
-        mids.append(mid)
-        uppers.append(mid + std_mult * std)
-    return mids, uppers
-
-
 def _detect_bollinger_climb(symbol: str, hourly_klines: list) -> dict | None:
     """检测布林爬坡信号：收盘价在中轨附近+HL容忍抬高+量能放大+buy_ratio高+ATR趋势"""
     cfg = BB_CLIMB_CONFIG
@@ -1681,62 +1596,45 @@ def _detect_bollinger_climb(symbol: str, hourly_klines: list) -> dict | None:
     if trading_symbols and symbol not in trading_symbols:
         return None
     
-    n_klines = len(hourly_klines)
-    min_required = max(cfg["period"] + 1, cfg["atr_period"] + 1)
-    if n_klines < min_required:
+    if len(hourly_klines) < max(cfg["period"] + 1, cfg["atr_period"] + 1):
         return None
     
-    # 预计算滚动布林带（每根K线用其当时可观察到的数据）
+    # 计算布林带
     closes = [k["c"] for k in hourly_klines]
-    bb_mids, bb_uppers = _compute_rolling_bb(closes, cfg["period"], cfg["std_mult"])
-    if not bb_mids:
+    bb = _calculate_bollinger_bands(closes, cfg["period"], cfg["std_mult"])
+    if not bb:
         return None
     
-    # bb_mids[i] 对应对 hourly_klines[cfg["period"] - 1 + i]
-    # 即 hourly_klines[n] 对应的布林索引 = n - cfg["period"] + 1
-    def _bb_idx(n):
-        return n - cfg["period"] + 1
+    middle = bb["middle"]
+    upper = bb["upper"]
     
-    last_idx = n_klines - 1
-    bb_last = _bb_idx(last_idx)
-    if bb_last < 0 or bb_last >= len(bb_mids):
-        return None
-    
-    middle = bb_mids[bb_last]
-    upper = bb_uppers[bb_last]
-    
-    # 计算ATR（全量滑动）
+    # 计算ATR
     atr = _calculate_atr(hourly_klines, cfg["atr_period"]) if cfg["atr_enabled"] else None
     
-    # 计算24小时平均成交量（含最后一根，用于相对比较）
-    avg_volumes = [k.get("q", 0) for k in hourly_klines[-24:]] if len(hourly_klines) >= 24 else [k.get("q", 0) for k in hourly_klines]
+    # 计算24小时平均成交量（不含最后一根）
+    avg_volumes = [k.get("q", 0) for k in hourly_klines[:-1]]
     avg_vol = sum(avg_volumes) / len(avg_volumes) if avg_volumes else 0
     
-    # 检查最后一根K线的独立条件
+    # 检查最后一根K线的独立条件（价格中轨附近+买比+量能）
     last_k = hourly_klines[-1]
     if not _check_hour_climb(last_k, middle, upper, avg_vol, cfg):
         return None
     
     # 检查HL容忍抬高（基于最后一根的位置）
-    if not _check_hl_climb_tolerant(hourly_klines, last_idx, cfg):
+    if not _check_hl_climb_tolerant(hourly_klines, len(hourly_klines) - 1, cfg):
         return None
     
-    # ATR趋势过滤
+    # ATR趋势过滤：当前K线振幅应大于ATR的50%（表明趋势明确）
     if atr is not None and atr > 0:
         current_range = last_k["h"] - last_k["l"]
         if current_range < atr * 0.5:
             return None
     
-    # 往前计算持续了几小时（每根K线用其当时的滚动布林带判断）
+    # 往前计算持续了几小时（容忍版）
     consecutive_count = 1
-    for i in range(n_klines - 2, -1, -1):
+    for i in range(len(hourly_klines) - 2, -1, -1):
         k = hourly_klines[i]
-        bb_i = _bb_idx(i)
-        if bb_i < 0:
-            break
-        mid_i = bb_mids[bb_i]
-        upper_i = bb_uppers[bb_i]
-        if not _check_hour_climb(k, mid_i, upper_i, avg_vol, cfg):
+        if not _check_hour_climb(k, middle, upper, avg_vol, cfg):
             break
         if not _check_hl_climb_tolerant(hourly_klines, i, cfg):
             break
@@ -1837,20 +1735,16 @@ def _detect_bollinger_candidate(symbol: str, hourly_klines: list) -> dict | None
     # 检查候选期内是否有爬坡信号K线（说明是从爬坡断开进入蓄力的）
     # 至少有一根K线曾经接近满足爬坡条件（HL抬高过）
     has_hl_climb = False
-    check_start = max(1, len(hourly_klines) - near_count)
-    for i in range(check_start, len(hourly_klines)):
+    for i in range(len(hourly_klines) - near_count, len(hourly_klines)):
+        if i == 0:
+            has_hl_climb = True
+            break
         k = hourly_klines[i]
         prev_k = hourly_klines[i - 1]
         if k["h"] > prev_k["h"] and k["l"] > prev_k["l"]:
             has_hl_climb = True
             break
-    if not has_hl_climb:
-        # 回退：只检查第一根与前一根（如果存在前一根）
-        if check_start > 0 and check_start < len(hourly_klines):
-            k = hourly_klines[check_start]
-            prev_k = hourly_klines[check_start - 1]
-            if k["h"] > prev_k["h"] and k["l"] > prev_k["l"]:
-                has_hl_climb = True
+    
     if not has_hl_climb:
         return None
     
@@ -1941,7 +1835,6 @@ def api_bollinger_climb():
         "data": cache.get("results", []),
         "candidate_count": len(cache.get("candidates", [])),
         "candidates": cache.get("candidates", []),
-        "updated_at": cache.get("updated_at", 0),
     })
 
 
@@ -1951,60 +1844,37 @@ def _calculate_buy_ratio(price_delta: float, last_price: float) -> float:
     price_delta: 这一秒的价格变化
     last_price: 上一秒的价格
     返回: buy_ratio (0.1 ~ 0.9)
-    
-    使用 sigmoid 式映射：0.01% 变化 → 约 0.51，0.1% 变化 → 约 0.60，1% 变化 → 约 0.90
     """
     if last_price <= 0:
         return 0.5
     
-    bp = price_delta / last_price  # 变化率 (例如 0.001 = 0.1%)
+    # 价格变化率（相对于上一秒价格，更敏感）
+    change_rate = price_delta / last_price
     
-    # tanh 映射：bp*500 使得 0.1%变化对应约 0.46×tanh → 0.5+0.4*0.46 ≈ 0.68
-    # 0.01% 变化对应 0.5+0.4*0.05 ≈ 0.52
-    sensitivity = 500.0
-    raw = 0.5 + 0.4 * (2.0 / (1.0 + 2.7183 ** (-sensitivity * bp)) - 1.0)
+    # 用符号函数压缩到 [-1, 1]，再映射到 [0.1, 0.9]
+    # change_rate * 100 的系数：0.01价格变化 → 完全偏某一边
+    if change_rate > 0:
+        buy_ratio = 0.5 + min(0.4, change_rate * 100)
+    elif change_rate < 0:
+        buy_ratio = 0.5 - min(0.4, abs(change_rate) * 100)
+    else:
+        buy_ratio = 0.5
     
-    return max(0.1, min(0.9, raw))
+    return max(0.1, min(0.9, buy_ratio))
 
 # ========== 页面 ==========
 @app.route("/")
 def index():
-    response = make_response(render_template("market_monitor.html"))
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-    return response
-
-# 快照缓存：避免API请求线程阻塞在data_lock上
-_snapshot_cache = {"rows": [], "count": 0, "updated": 0}
-_snapshot_cache_lock = threading.Lock()
-
-def _refresh_snapshot_cache():
-    """后台线程：定期刷新快照缓存"""
-    global _snapshot_cache
-    while True:
-        try:
-            time.sleep(5)
-            rows = get_table_data()
-            with _snapshot_cache_lock:
-                _snapshot_cache = {"rows": rows, "count": len(rows), "updated": time.time()}
-            print(f"[SNAPSHOT_CACHE] refreshed: {len(rows)} rows", flush=True)
-        except Exception as e:
-            print(f"[SNAPSHOT_CACHE] refresh error: {e}", flush=True)
-
-def _get_cached_snapshot():
-    """无锁读取缓存的快照数据"""
-    with _snapshot_cache_lock:
-        return dict(_snapshot_cache)
+    return render_template("market_monitor.html")
 
 @app.route("/api/snapshot")
 def api_snapshot():
-    """返回全量数据（从缓存读取，无锁）"""
-    cache = _get_cached_snapshot()
+    """返回全量数据"""
+    rows = get_table_data()
     return jsonify({
         "code": 0,
-        "count": cache.get("count", 0),
-        "data": cache.get("rows", [])
+        "count": len(rows),
+        "data": rows
     })
 
 @app.route("/api/debug_state")
@@ -2105,19 +1975,20 @@ def api_surge():
 
 @app.route("/api/vol_surge")
 def api_vol_surge():
-    """返回15分钟成交量突增的币种列表（最近1小时，含tradeable标记）"""
+    """返回15分钟成交量突增的币种列表"""
     with data_lock:
-        vol_surge_history = market_data.get("vol_surge_history", {})
+        vol_surge_symbols = market_data.get("vol_surge_symbols", {})
         symbols = market_data.get("symbols", {})
+        vol_15m_last = market_data.get("vol_15m_last", {})
     
     result = []
     now = time.time()
-    for symbol, info in vol_surge_history.items():
+    for symbol, info in vol_surge_symbols.items():
+        # 检查是否还在1小时内
         elapsed = now - info.get("start_time", 0)
-        if elapsed > 3600:  # 超过1小时不展示
+        if elapsed > 3600:
             continue
         
-        tradeable = elapsed <= 300  # 5分钟内可交易
         symbol_info = symbols.get(symbol, {})
         result.append({
             "symbol": symbol,
@@ -2126,108 +1997,23 @@ def api_vol_surge():
             "last_vol": info.get("last_vol", 0),
             "price": symbol_info.get("price", 0),
             "gain_pct": symbol_info.get("priceChangePercent", 0),
-            "remaining_seconds": int(300 - elapsed) if tradeable else 0,
-            "start_time": info.get("start_time", 0),
-            "tradeable": tradeable
+            "remaining_seconds": int(3600 - elapsed),
+            "start_time": info.get("start_time", 0)
         })
     
     # 按突增倍数降序
     result.sort(key=lambda x: -x["ratio"])
     return jsonify({"code": 0, "count": len(result), "data": result})
 
-@app.route("/api/momentum_tracker")
-def api_momentum_tracker():
-    """返回追涨追踪器列表（涨幅5%~10%的币，追踪到10%需要多少成交量）"""
-    with data_lock:
-        tracker = dict(market_data.get("momentum_tracker", {}))
-        symbols = dict(market_data.get("symbols", {}))
-        today_open_prices = dict(market_data.get("today_open_prices", {}))
-    
-    now = time.time()
-    result = []
-    for symbol, info in tracker.items():
-        symbol_info = symbols.get(symbol, {})
-        current_price = symbol_info.get("price", info.get("current_price", 0))
-        
-        # 使用 today_open_prices 计算涨幅（与 update_momentum_tracker 一致）
-        open_price = today_open_prices.get(symbol, symbol_info.get("o", 0))
-        if open_price > 0 and current_price > 0:
-            current_gain = (current_price - open_price) / open_price * 100
-        else:
-            current_gain = info.get("current_gain_pct", 0)
-        
-        vol_24h = info.get("vol_24h_today", 0)
-        elapsed = int(now - info.get("entry_time", now))
-        remaining = max(0, MOMENTUM_MAX_AGE - elapsed)
-        
-        # 重新计算还需成交量（基于最新价格）
-        vol_needed = 0
-        if current_gain > 0 and current_gain < MOMENTUM_TARGET_GAIN:
-            vol_needed = (MOMENTUM_TARGET_GAIN - current_gain) / max(current_gain, 0.1) * vol_24h
-        
-        # 状态：如果涨幅>=10%或status已经是reached，显示为已达标
-        status = info.get("status", "tracking")
-        if current_gain >= MOMENTUM_TARGET_GAIN:
-            status = "reached"
-        
-        result.append({
-            "symbol": symbol,
-            "entry_time": info.get("entry_time", 0),
-            "entry_price": info.get("entry_price", 0),
-            "entry_gain_pct": round(info.get("entry_gain_pct", 0), 2),
-            "target_gain_pct": MOMENTUM_TARGET_GAIN,
-            "current_price": current_price,
-            "current_gain_pct": round(current_gain, 2),
-            "vol_24h_today": round(vol_24h, 2),
-            "vol_needed": round(vol_needed, 2),
-            "elapsed_seconds": elapsed,
-            "remaining_seconds": remaining,
-            "status": status,
-        })
-    
-    # 排序：已达标排最后，其他按当前涨幅降序
-    result.sort(key=lambda x: (0 if x["status"] == "reached" else 1, -x["current_gain_pct"]))
-    return jsonify({"code": 0, "count": len(result), "data": result})
-
-@app.route("/momentum")
-def momentum_page():
-    """追涨追踪器页面"""
-    response = make_response(render_template("momentum_tracker.html"))
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    response.headers["Pragma"] = "no-cache"
-    return response
-
 # ========== WebSocket ==========
-def _send_init_data(sid):
-    """后台任务：向指定客户端发送初始化数据"""
-    print(f"[_send_init_data] started for sid={sid}", flush=True)
-    try:
-        data = get_table_data()
-        print(f"[_send_init_data] got {len(data)} rows, emitting...", flush=True)
-        socketio.emit("init_data", {"data": data, "count": len(data)}, to=sid)
-        print(f"已发送init_data ({len(data)} 条) to {sid}", flush=True)
-    except Exception as e:
-        print(f"send init_data error: {e}", flush=True)
-
-
 @socketio.on("connect", namespace="/")
 def on_connect():
     import sys
-    from flask import request
-    sid = request.sid
-    print(f"浏览器已连接 sid={sid}", flush=True)
+    print("浏览器已连接", flush=True)
     sys.stdout.flush()
-    # 从缓存读取快照，避免data_lock阻塞
-    cache = _get_cached_snapshot()
-    data = cache.get("rows", [])
-    count = cache.get("count", 0)
-    if count == 0:
-        # 缓存尚未就绪，fallback到直接获取
-        data = get_table_data()
-        count = len(data)
-    print(f"[init_data] got {count} rows for sid={sid}", flush=True)
-    socketio.emit("init_data", {"data": data, "count": count}, to=sid)
-    print(f"已发送init_data ({count} 条) to {sid}", flush=True)
+    data = get_table_data()
+    socketio.emit("init_data", {"data": data, "count": len(data)})
+    print(f"已发送init_data ({len(data)} 条)", flush=True)
     return True
 
 @socketio.on("disconnect")
@@ -2378,12 +2164,11 @@ def ws_update_loop():
                                 })
                                 import datetime
                                 print(f"[SURGE] {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {symbol} delta_q={delta_q:,.0f} buy_ratio={buy_ratio:.3f} price={price}")
-                                # 清理超过30分钟的记录，并限制单币种最多50条
-                                cache = market_data["surge_cache"][symbol]
-                                cache = [r for r in cache if current_second - r["t"] < SURGE_CACHE_MAX_MINUTES * 60]
-                                if len(cache) > 50:
-                                    cache = cache[-50:]
-                                market_data["surge_cache"][symbol] = cache
+                                # 清理超过30分钟的记录
+                                market_data["surge_cache"][symbol] = [
+                                    r for r in market_data["surge_cache"][symbol]
+                                    if current_second - r["t"] < SURGE_CACHE_MAX_MINUTES * 60
+                                ]
 
                         updates.append({
                             "symbol": symbol,
@@ -2406,7 +2191,7 @@ def ws_update_loop():
         print("WebSocket连接成功！")
 
     ws = websocket.WebSocketApp(
-        "wss://stream.binance.com:9443/ws/!miniTicker@arr",
+        "wss://fstream.binance.com/ws/!miniTicker@arr",
         on_message=on_message,
         on_error=on_error,
         on_close=on_close,
@@ -2569,9 +2354,6 @@ def _aggregate_minute_kline():
             if symbol not in market_data["minute_klines"]:
                 market_data["minute_klines"][symbol] = []
             market_data["minute_klines"][symbol].append(kline)
-            # 截断：只保留最近120条（2小时），降低内存占用
-            if len(market_data["minute_klines"][symbol]) > MAX_MINUTE_KLINES_PER_SYMBOL:
-                market_data["minute_klines"][symbol] = market_data["minute_klines"][symbol][-MAX_MINUTE_KLINES_PER_SYMBOL:]
             new_klines.append(kline)
         
         # 清理已聚合的秒数据
@@ -2612,31 +2394,32 @@ def _aggregate_minute_kline():
                 vol_data[symbol] = current_vol
                 market_data["vol_15m_last"][symbol] = current_vol
             
-            # 写入COS（持久化）- 后台异步避免阻塞
-            threading.Thread(target=save_vol_15m_to_cos, args=(last_15m_slot, vol_data), daemon=True).start()
+            # 写入COS（持久化）
+            save_vol_15m_to_cos(last_15m_slot, vol_data)
             
-            # 将当前15分钟数据追加到内存历史缓存（不再从COS重新加载）
-            for symbol, cur_vol in vol_data.items():
+            # 从COS加载最近4小时的严格时间窗口数据
+            cos_history = load_vol_15m_from_cos(last_15m_slot, slots_count=16)
+            
+            # 合并到内存缓存（以slot_ts为key的字典）
+            for symbol, slots in cos_history.items():
                 if symbol not in market_data["vol_15m_history"]:
                     market_data["vol_15m_history"][symbol] = {}
-                market_data["vol_15m_history"][symbol][last_15m_slot] = cur_vol
-                # 清理超过8小时（32个slot）的旧缓存
-                cutoff_slot = last_15m_slot - 32 * 900
+                market_data["vol_15m_history"][symbol].update(slots)
+                # 清理超过4小时的旧缓存
+                cutoff_slot = last_15m_slot - 16 * 900
                 for ts in list(market_data["vol_15m_history"][symbol].keys()):
                     if ts < cutoff_slot:
                         del market_data["vol_15m_history"][symbol][ts]
             
             # 严格4小时时间窗口计算均值（分母恒为16，缺失补0）
-            symbols_info = market_data.get("symbols", {})
             for symbol in all_symbols:
                 current_vol = vol_data.get(symbol, 0)
                 avg_4h = calc_vol_15m_avg_strict(symbol, last_15m_slot, market_data["vol_15m_history"])
                 market_data["vol_15m_avg_4h"][symbol] = avg_4h
                 
-                # 检测突增：当前15分钟 > 前4小时均值 × 3.0（与 check_volume_surge 一致）
-                if current_vol > 0 and avg_4h > 0 and current_vol > avg_4h * 3.0:
-                    gain_pct = symbols_info.get(symbol, {}).get("priceChangePercent", 0)
-                    check_volume_surge(symbol, current_vol, avg_4h, gain_pct)
+                # 检测突增：当前15分钟 > 前4小时均值 × 1.5（且当前有成交）
+                if current_vol > 0 and avg_4h > 0 and current_vol > avg_4h * 1.5:
+                    check_volume_surge(symbol, current_vol, avg_4h)
             
             # 重置当前15分钟累计
             market_data["vol_15m_current"] = {}
@@ -2644,159 +2427,28 @@ def _aggregate_minute_kline():
             
             # 清理过期的突增记录
             cleanup_surge_records()
-            cleanup_vol_surge_history()
 
-        # 注：hourly_kline_cache 由 bollinger_climb_background_loop 每10秒异步刷新，
-        # 不需要在锁内同步聚合，避免长时间持锁阻塞API请求
+        # 同步更新 hourly_kline_cache：如果当前分钟是整小时的最后一分钟，聚合该小时
+        if minute_ts > 0:
+            next_minute_ts = minute_ts + 60
+            # 检查下一分钟是否进入了新的小时
+            current_hour = (minute_ts // 3600) * 3600
+            next_hour = (next_minute_ts // 3600) * 3600
+            if next_hour > current_hour:
+                # 刚完成一个整小时，从minute_klines中聚合该小时并更新hourly_kline_cache
+                _update_hourly_cache_for_hour(current_hour)
     except Exception as e:
         print(f"聚合失败: {e}")
 
-# ========== 追涨追踪器 ==========
-MOMENTUM_MIN_GAIN = 5.0      # 进入追踪的最小涨幅 5%
-MOMENTUM_TARGET_GAIN = 10.0  # 目标涨幅 10%
-MOMENTUM_MAX_AGE = 4 * 3600  # 最大追踪时间 4小时
-MOMENTUM_MIN_VOL_24H = 3_000_000  # 24h成交量最低门槛 300万
-
-def update_momentum_tracker():
-    """更新追涨追踪器
-    追踪涨幅5%~10%的币，估算还需多少成交量才能涨到10%
-    超过4小时未达10%剔除
-    """
-    now = time.time()
-    with data_lock:
-        symbols = dict(market_data.get("symbols", {}))
-        today_open_prices = dict(market_data.get("today_open_prices", {}))
-        vol_24h_today = dict(market_data.get("vol_24h_today", {}))
-        tracker = market_data.get("momentum_tracker", {})
-    
-    # 如果 today_open_prices 加载不足（少于50个），说明系统刚启动，数据不完整，跳过
-    if len(today_open_prices) < 50:
-        return
-    
-    # 复制一份避免遍历期间修改
-    tracker = dict(tracker)
-    
-    added_count = 0
-    skipped_vol = 0
-    skipped_gain_high = 0
-    skipped_gain_low = 0
-    
-    for symbol, info in symbols.items():
-        price = info.get("price", 0)
-        open_price = today_open_prices.get(symbol, info.get("o", 0))
-        if open_price <= 0 or price <= 0:
-            continue
-        
-        gain_pct = (price - open_price) / open_price * 100
-        vol_24h = vol_24h_today.get(symbol, 0)
-        
-        # 24h成交量门槛
-        if vol_24h < MOMENTUM_MIN_VOL_24H:
-            skipped_vol += 1
-            continue
-        
-        # 已经达到10%以上的，标记为已完成
-        if gain_pct >= MOMENTUM_TARGET_GAIN:
-            skipped_gain_high += 1
-            if symbol in tracker:
-                tracker[symbol]["status"] = "reached"
-                tracker[symbol]["current_price"] = price
-                tracker[symbol]["current_gain_pct"] = gain_pct
-                tracker[symbol]["vol_24h_today"] = vol_24h
-                # 记录首次达标时间
-                if "reached_time" not in tracker[symbol]:
-                    tracker[symbol]["reached_time"] = now
-                # 已达到的保留5分钟后剔除
-                if now - tracker[symbol]["reached_time"] > 300:
-                    del tracker[symbol]
-            continue
-        
-        # 涨幅不足5%的，如果已在列表中则更新，否则不加入
-        if gain_pct < MOMENTUM_MIN_GAIN:
-            skipped_gain_low += 1
-            if symbol in tracker:
-                tracker[symbol]["current_price"] = price
-                tracker[symbol]["current_gain_pct"] = gain_pct
-                tracker[symbol]["vol_24h_today"] = vol_24h
-                # 跌回5%以下：如果已追踪超过5分钟且当前涨幅<4%，剔除
-                elapsed = now - tracker[symbol]["entry_time"]
-                if elapsed > 300 and gain_pct < MOMENTUM_MIN_GAIN - 1.0:
-                    del tracker[symbol]
-                # 如果跌幅超过3%（低于进入涨幅的一半以下），立即剔除
-                elif gain_pct < MOMENTUM_MIN_GAIN * 0.5:
-                    del tracker[symbol]
-            continue
-        
-        # 涨幅在5%~10%之间
-        if symbol not in tracker:
-            # 新进入追踪
-            # 估算还需多少成交量到10%
-            # 假设：成交额与涨幅大致成比例（非常粗略的估算）
-            # vol_needed = (target - current) / current * vol_24h_today
-            vol_needed = (MOMENTUM_TARGET_GAIN - gain_pct) / max(gain_pct, 0.1) * vol_24h
-            tracker[symbol] = {
-                "entry_time": now,
-                "entry_price": price,
-                "entry_gain_pct": gain_pct,
-                "target_gain_pct": MOMENTUM_TARGET_GAIN,
-                "current_price": price,
-                "current_gain_pct": gain_pct,
-                "vol_24h_today": vol_24h,
-                "vol_needed": vol_needed,
-                "status": "tracking",
-            }
-            added_count += 1
-        else:
-            # 更新已有追踪
-            entry_time = tracker[symbol]["entry_time"]
-            elapsed = now - entry_time
-            
-            # 超过4小时未达10%，剔除
-            if elapsed > MOMENTUM_MAX_AGE:
-                del tracker[symbol]
-                continue
-            
-            # 重新估算还需成交量（基于最新数据）
-            vol_needed = (MOMENTUM_TARGET_GAIN - gain_pct) / max(gain_pct, 0.1) * vol_24h
-            tracker[symbol].update({
-                "current_price": price,
-                "current_gain_pct": gain_pct,
-                "vol_24h_today": vol_24h,
-                "vol_needed": vol_needed,
-                "elapsed_seconds": int(elapsed),
-            })
-    
-    # 清理已不在symbols中的追踪
-    for symbol in list(tracker.keys()):
-        if symbol not in symbols:
-            del tracker[symbol]
-    
-    if len(symbols) > 0:
-        print(f"[MOMENTUM] 扫描{len(symbols)}个币，新增{added_count}个，跳过(成交量低:{skipped_vol}, 涨幅高:{skipped_gain_high}, 涨幅低:{skipped_gain_low})，当前追踪:{len(tracker)}")
-    
-    with data_lock:
-        market_data["momentum_tracker"] = tracker
-
-
-# _update_hourly_cache_for_hour 保留供 bollinger 后台线程或其他需要的地方使用
-
-def _update_hourly_cache_for_hour(hour_ts: int, active_symbols: list = None):
-    """从minute_klines中聚合指定小时的数据，更新hourly_kline_cache
-    
-    active_symbols: 本分钟有交易的币种列表，若为None则扫描全量
-    """
+def _update_hourly_cache_for_hour(hour_ts: int):
+    """从minute_klines中聚合指定小时的数据，更新hourly_kline_cache"""
     hourly_cache = market_data.get("hourly_kline_cache", {})
     minute_klines = market_data.get("minute_klines", {})
 
-    symbols_to_check = active_symbols if active_symbols else list(minute_klines.keys())
-    
-    for symbol in symbols_to_check:
-        klines = minute_klines.get(symbol, [])
-        if not klines:
-            continue
-        # 找出属于该小时的分钟K线（只检查最近60根）
-        hour_minutes = [k for k in klines[-60:] if (k["t"] // 3600) * 3600 == hour_ts]
-        if len(hour_minutes) < 2:
+    for symbol, klines in minute_klines.items():
+        # 找出属于该小时的分钟K线
+        hour_minutes = [k for k in klines if (k["t"] // 3600) * 3600 == hour_ts]
+        if len(hour_minutes) < 2:  # 至少2分钟数据才算有效
             continue
 
         buy_q = sum(k.get("buy_q", 0) for k in hour_minutes)
@@ -2818,35 +2470,22 @@ def _update_hourly_cache_for_hour(hour_ts: int, active_symbols: list = None):
 
         if symbol not in hourly_cache:
             hourly_cache[symbol] = []
+        # 按时间戳去重：替换已有的或追加新的
         existing = {h["t"]: i for i, h in enumerate(hourly_cache[symbol])}
         if hour_ts in existing:
             hourly_cache[symbol][existing[hour_ts]] = hourly_kline
         else:
             hourly_cache[symbol].append(hourly_kline)
             hourly_cache[symbol].sort(key=lambda x: x["t"])
-            # 截断：只保留最近36根（36小时），满足BB爬坡25根需求
-            if len(hourly_cache[symbol]) > MAX_HOURLY_KLINES_PER_SYMBOL:
-                hourly_cache[symbol] = hourly_cache[symbol][-MAX_HOURLY_KLINES_PER_SYMBOL:]
 
     market_data["hourly_kline_cache"] = hourly_cache
 
 def minute_aggregator_loop():
     """每分钟触发聚合，并上传COS（每次聚合完立即上传）"""
     last_check_minute = None
-    cleanup_counter = 0
-    momentum_counter = 0
     
     while True:
         time.sleep(1)
-        
-        # 每10秒更新一次追涨追踪器（放在分钟检查之前）
-        momentum_counter += 1
-        if momentum_counter >= 10:
-            momentum_counter = 0
-            try:
-                update_momentum_tracker()
-            except Exception as e:
-                print(f"[MOMENTUM] 更新失败: {e}")
         
         current_minute = get_current_minute_ts()
         
@@ -2862,18 +2501,15 @@ def minute_aggregator_loop():
                 market_data["current_minute"] = current_minute
                 market_data["minute_state"] = {}
                 
-                cleanup_counter += 1
-                if cleanup_counter >= 60:
-                    cleanup_counter = 0
-                    # 清理超过12天的分钟K线数据
-                    cutoff = time.time() - (MAX_MINUTE_KLINES * 60)
-                    for symbol in list(market_data["minute_klines"].keys()):
-                        market_data["minute_klines"][symbol] = [
-                            k for k in market_data["minute_klines"][symbol]
-                            if k.get("t", 0) >= cutoff
-                        ]
+                # 清理超过12天的分钟K线数据
+                cutoff = time.time() - (MAX_MINUTE_KLINES * 60)
+                for symbol in list(market_data["minute_klines"].keys()):
+                    market_data["minute_klines"][symbol] = [
+                        k for k in market_data["minute_klines"][symbol]
+                        if k.get("t", 0) >= cutoff
+                    ]
                 
-                # 清理超过15分钟的大单追踪记录（轻量操作，每分执行）
+                # 清理超过15分钟的大单追踪记录
                 surge_cutoff = time.time() - (SURGE_CACHE_MAX_MINUTES * 60)
                 for symbol in list(market_data["surge_cache"].keys()):
                     market_data["surge_cache"][symbol] = [
@@ -2883,30 +2519,38 @@ def minute_aggregator_loop():
                     if not market_data["surge_cache"][symbol]:
                         del market_data["surge_cache"][symbol]
                 
-                # 清理超过2分钟的秒级delta数据
+                # 清理超过2分钟的秒级delta数据（防止旧数据堆积）
                 second_cutoff = time.time() - 120
                 for sec_ts in list(market_data["second_deltas"].keys()):
                     if sec_ts < second_cutoff:
                         del market_data["second_deltas"][sec_ts]
-
-            if cleanup_counter == 0:
-                # 清理 hourly_kline_cache 每小时一次（保留最近36小时）
-                hour_cutoff = (int(time.time()) // 3600 - 36) * 3600
+                
+                # 清理 hourly_kline_cache 只保留最近7天（168小时）
+                hour_cutoff = (int(time.time()) // 3600 - 168) * 3600
                 for symbol in list(market_data.get("hourly_kline_cache", {}).keys()):
                     market_data["hourly_kline_cache"][symbol] = [
                         h for h in market_data["hourly_kline_cache"][symbol]
                         if h.get("t", 0) >= hour_cutoff
                     ]
 
-        # 每分钟聚合后立即上传COS分钟K线（必须在锁外，避免死锁）
-        klines_copy = dict(market_data["minute_klines"])
-        save_minute_klines_to_cos(klines_copy)
-        _save_hourly_cache_to_cos()
+            # 每分钟聚合后立即上传COS分钟K线
+            with data_lock:
+                klines_copy = dict(market_data["minute_klines"])
+            save_minute_klines_to_cos(klines_copy)
+            _save_hourly_cache_to_cos()
 
-        # 同时上传最新行情快照到COS（必须在锁外，避免死锁）
-        save_symbols_snapshot_to_cos()
-        save_vol_24h_today_to_cos()
-        save_today_open_prices_to_cos()
+            # 同时上传最新行情快照到COS（供API从COS读取）
+            with data_lock:
+                snap = {
+                    "symbols": dict(market_data.get("symbols", {})),
+                    "vol_24h_today": dict(market_data.get("vol_24h_today", {})),
+                    "vol_15m_last": dict(market_data.get("vol_15m_last", {})),
+                    "vol_15m_avg_4h": dict(market_data.get("vol_15m_avg_4h", {})),
+                    "updated_at": time.time()
+                }
+            save_symbols_snapshot_to_cos()
+            save_vol_24h_today_to_cos()
+            save_today_open_prices_to_cos()
 
 # ========== 定时写入 ==========
 def write_loop():
@@ -3362,20 +3006,14 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"加载历史K线失败: {e}")
         
-        # 从COS加载最近8小时的15分钟成交量历史（扩大窗口减少停机影响）
+        # 从COS加载最近4小时的15分钟成交量历史
         try:
             current_slot = get_current_15m_slot()
-            vol_15m_hist = load_vol_15m_from_cos(current_slot, slots_count=32)
-            actual_slots = {}
-            for symbol, slots in vol_15m_hist.items():
-                actual_slots[symbol] = slots
-                if symbol not in market_data["vol_15m_history"]:
-                    market_data["vol_15m_history"][symbol] = {}
-                market_data["vol_15m_history"][symbol].update(slots)
-            # 统计实际有多少个非零slot（评估数据质量）
-            non_zero_counts = [len([v for v in slots.values() if v > 0]) for slots in actual_slots.values()]
-            avg_non_zero = sum(non_zero_counts) / len(non_zero_counts) if non_zero_counts else 0
-            print(f"[VOL_15M_COS] 启动时加载了 {len(vol_15m_hist)} 个币种的15分钟历史，平均非零slot: {avg_non_zero:.1f}/32")
+            vol_15m_hist = load_vol_15m_from_cos(current_slot, slots_count=16)
+            with data_lock:
+                for symbol, slots in vol_15m_hist.items():
+                    market_data["vol_15m_history"][symbol] = slots
+                print(f"[VOL_15M_COS] 启动时加载了 {len(vol_15m_hist)} 个币种的15分钟历史")
         except Exception as e:
             print(f"[VOL_15M_COS] 启动加载失败: {e}")
         
@@ -3388,22 +3026,10 @@ if __name__ == "__main__":
         threading.Thread(target=hyperliquid_backfill_loop, daemon=True).start()
         threading.Thread(target=sim_trade_broadcast_loop, daemon=True).start()
         threading.Thread(target=bollinger_climb_background_loop, daemon=True).start()
-        threading.Thread(target=_refresh_snapshot_cache, daemon=True).start()
 
-        # 优先从COS加载1h K线缓存，检测数据时效性
+        # 优先从COS加载1h K线缓存，不够再API回填
         hourly_cache = _load_hourly_cache_from_cos()
-        cache_stale = True
-        if hourly_cache:
-            # 检测缓存中最新的K线时间戳
-            latest_ts = 0
-            for hklines in hourly_cache.values():
-                if hklines:
-                    latest_ts = max(latest_ts, max(h.get("t", 0) for h in hklines))
-            hours_stale = (time.time() - latest_ts) / 3600 if latest_ts > 0 else 999
-            print(f"[HOURLY-COS] COS缓存最新K线时间: {datetime.fromtimestamp(latest_ts).strftime('%Y-%m-%d %H:%M') if latest_ts else 'N/A'} (距今{hours_stale:.1f}小时)")
-            cache_stale = hours_stale > 2  # 超过2小时未更新视为过期
-        
-        if hourly_cache and len(hourly_cache) >= 100 and not cache_stale:
+        if hourly_cache and len(hourly_cache) >= 100:
             trading_symbols = market_data.get("trading_symbols", set())
             if trading_symbols:
                 before = len(hourly_cache)
@@ -3414,11 +3040,10 @@ if __name__ == "__main__":
             with data_lock:
                 market_data["hourly_kline_cache"] = hourly_cache
                 market_data["bb_backfill_done"] = True
-            print(f"[HOURLY-COS] 直接从COS加载了 {len(hourly_cache)} 个币种的1h K线，数据新鲜无需API回填")
+            print(f"[HOURLY-COS] 直接从COS加载了 {len(hourly_cache)} 个币种的1h K线，无需API回填")
             _update_today_open_from_hourly_cache(hourly_cache)
         else:
-            reason = "数据过期" if cache_stale else "COS无1h缓存或数据不足"
-            print(f"[HOURLY-COS] {reason}，启动API回填...")
+            print("[HOURLY-COS] COS无1h缓存或数据不足，启动API回填...")
             threading.Thread(target=backfill_hourly_klines, daemon=True).start()
 
         print(f"=" * 50)

@@ -62,7 +62,7 @@
         .surge-item .ratio .sell { color: #ff4757; }
         .surge-empty { color: #555; font-size: 12px; padding: 10px; text-align: center; }
 
-        /* 模拟交易面板 */
+        /* 实盘交易面板 */
         .sim-trade-panel {
             background: #16213e;
             border: 1px solid #333;
@@ -101,8 +101,10 @@
         .sim-stat-item .value { color: #fff; font-size: 14px; font-weight: bold; margin-top: 4px; }
         .sim-stat-item .value.up { color: #00ff88; }
         .sim-stat-item .value.down { color: #ff4757; }
+        #sim_positions_wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
         .sim-positions-table {
             width: 100%;
+            min-width: 420px;
             border-collapse: collapse;
             font-size: 12px;
         }
@@ -140,10 +142,38 @@
             color: #888;
             text-align: left;
         }
+        /* 默认手机端：详情项纵向排列 */
         .sim-detail-row td .detail-item {
-            display: inline-block;
-            margin-right: 16px;
-            margin-bottom: 4px;
+            display: block;
+            margin-right: 0;
+            margin-bottom: 3px;
+            width: 100%;
+            white-space: normal;
+            line-height: 1.4;
+        }
+        /* 桌面端：详情项横向排列 */
+        @media (min-width: 601px) {
+            .sim-detail-row td .detail-item {
+                display: inline-block;
+                margin-right: 16px;
+                margin-bottom: 4px;
+                width: auto;
+                white-space: nowrap;
+            }
+        }
+        /* 手机适配 */
+        @media (max-width: 600px) {
+            .sim-trade-panel { padding: 8px; margin-bottom: 10px; }
+            .sim-trade-panel h2 { font-size: 13px; }
+            .sim-stats { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+            .sim-stat-item { padding: 6px 4px; }
+            .sim-stat-item .label { font-size: 10px; }
+            .sim-stat-item .value { font-size: 12px; }
+            .sim-positions-table { font-size: 11px; min-width: 360px; }
+            .sim-positions-table th, .sim-positions-table td { padding: 5px 3px; }
+            .sim-positions-table .sig { font-size: 9px; }
+            .sim-detail-row td { font-size: 10px; padding: 6px 4px; }
+            .sim-expand-btn { font-size: 9px; margin-right: 2px; }
         }
         .sim-detail-row td .detail-label { color: #666; }
         .sim-detail-row td .detail-value { color: #ccc; }
@@ -336,25 +366,24 @@
     </style>
 </head>
 <body>
-    <h1>📊 全量行情监控</h1>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <h1 style="margin:0;">📊 全量行情监控</h1>
+        <a href="/momentum" style="color:#ff9500;text-decoration:none;font-size:13px;padding:6px 12px;border:1px solid #ff9500;border-radius:4px;">📈 追涨追踪器 →</a>
+    </div>
     <div class="info">
         共 <span id="count">0</span> 个USDT永续合约 | 
         WebSocket: <span id="ws_status">连接中...</span> |
         最后更新: <span id="updated">-</span>
     </div>
 
-    <!-- 模拟交易面板 -->
+    <!-- 实盘交易面板 -->
     <div class="sim-trade-panel" id="sim_trade_panel">
-        <h2 class="collapsible" onclick="togglePanel('sim_trade_content')">🤖 模拟交易持仓<span class="toggle-icon">▼</span></h2>
+        <h2 class="collapsible" onclick="togglePanel('sim_trade_content')">🤖 实盘交易持仓<span class="toggle-icon">▼</span></h2>
         <div class="sim-trade-content" id="sim_trade_content">
             <div class="sim-stats" id="sim_stats">
                 <div class="sim-stat-item">
-                    <div class="label">余额</div>
+                    <div class="label">总权益</div>
                     <div class="value" id="sim_balance">-</div>
-                </div>
-                <div class="sim-stat-item">
-                    <div class="label">累计盈亏</div>
-                    <div class="value" id="sim_total_pnl">-</div>
                 </div>
                 <div class="sim-stat-item">
                     <div class="label">未实现盈亏</div>
@@ -389,7 +418,7 @@
 
     <!-- 15分钟成交量突增面板 -->
     <div class="surge-panel" id="vol_surge_panel" style="margin-top:10px; border-color: #ff4757;">
-        <h2 class="collapsible" onclick="togglePanel('vol_surge_grid')" style="color: #ff4757;">🔥 15分钟成交量突增（&gt;1.5倍，持续1小时）<span class="toggle-icon">▼</span></h2>
+        <h2 class="collapsible" onclick="togglePanel('vol_surge_grid')" style="color: #ff4757;">🔥 15分钟成交量突增（&gt;3.0倍，最近1小时）<span class="toggle-icon">▼</span></h2>
         <div class="surge-grid" id="vol_surge_grid">
             <div class="surge-empty">暂无突增</div>
         </div>
@@ -558,7 +587,7 @@
             updatedEl.textContent = new Date().toLocaleTimeString();
         });
 
-        // 模拟交易实时更新
+        // 实盘交易实时更新
         socket.on('sim_trade_update', (state) => {
             renderSimTrade(state);
         });
@@ -581,7 +610,19 @@
         }
         setInterval(pollSnapshot, 3000);
 
-        // 实时更新
+        // 实时更新（节流渲染，避免高频 DOM 重绘）
+        let _renderPending = false;
+        let _renderTimeout = null;
+        const RENDER_THROTTLE_MS = 200;  // 最多每200ms重绘一次
+        
+        function scheduleRender() {
+            if (_renderTimeout) return;
+            _renderTimeout = setTimeout(() => {
+                _renderTimeout = null;
+                render();
+            }, RENDER_THROTTLE_MS);
+        }
+        
         socket.on('ws_update', (res) => {
             res.data.forEach(item => {
                 if (allData[item.symbol]) {
@@ -606,10 +647,10 @@
                     };
                 }
             });
-            render();
+            scheduleRender();
             updatedEl.textContent = new Date().toLocaleTimeString();
             
-            // 秒级刷新模拟交易盈亏（用最新价格实时计算，无需等后端推送）
+            // 秒级刷新实盘交易盈亏（用最新价格实时计算，无需等后端推送）
             updateSimTradeRealtime();
         });
 
@@ -651,13 +692,23 @@
                 return;
             }
             grid.innerHTML = volSurgeData.map(item => {
-                const remainingMin = Math.ceil(item.remaining_seconds / 60);
-                return `<div class="surge-item" style="border-color: #ff4757;" onclick="openModal('${item.symbol}')">
-                    <div class="sym" style="color: #ff4757;">${item.symbol} <span style="font-size:11px;">🔥${item.ratio}x</span></div>
-                    <div class="delta"><span>15m成交:</span> <span style="color:#ff4757;">${(item.vol_15m / 1e3).toFixed(1)}K</span></div>
-                    <div class="delta"><span>上期:</span> ${(item.last_vol / 1e3).toFixed(1)}K</div>
-                    <div class="delta"><span>剩余:</span> ${remainingMin}分钟</div>
-                </div>`;
+                if (item.tradeable) {
+                    const remainingMin = Math.ceil(item.remaining_seconds / 60);
+                    return `<div class="surge-item" style="border-color: #ff4757;" onclick="openModal('${item.symbol}')">
+                        <div class="sym" style="color: #ff4757;">${item.symbol} <span style="font-size:11px;">🔥${item.ratio}x</span></div>
+                        <div class="delta"><span>15m成交:</span> <span style="color:#ff4757;">${(item.vol_15m / 1e3).toFixed(1)}K</span></div>
+                        <div class="delta"><span>上期:</span> ${(item.last_vol / 1e3).toFixed(1)}K</div>
+                        <div class="delta"><span>剩余:</span> <span style="color:#2ed573;">${remainingMin}分钟</span></div>
+                    </div>`;
+                } else {
+                    const elapsedMin = Math.floor((Date.now() / 1000 - item.start_time) / 60);
+                    return `<div class="surge-item" style="border-color: #888; opacity: 0.7;" onclick="openModal('${item.symbol}')">
+                        <div class="sym" style="color: #888;">${item.symbol} <span style="font-size:11px;">🔥${item.ratio}x</span></div>
+                        <div class="delta"><span>15m成交:</span> ${(item.vol_15m / 1e3).toFixed(1)}K</div>
+                        <div class="delta"><span>上期:</span> ${(item.last_vol / 1e3).toFixed(1)}K</div>
+                        <div class="delta"><span style="color:#888;">已过期 ${elapsedMin}分钟</span></div>
+                    </div>`;
+                }
             }).join('');
         }
 
@@ -878,9 +929,9 @@
             // 更新表头
             const headerRow = document.getElementById('header-row');
             if (showExtra) {
-                headerRow.innerHTML = '<th>排名</th><th>币种</th><th>名称</th><th>分类</th><th>价格</th><th>今日成交额</th><th>15m成交额</th><th>涨跌幅</th><th>多空比</th>';
+                headerRow.innerHTML = '<th>排名</th><th>币种</th><th>名称</th><th>分类</th><th>价格</th><th>今日成交额</th><th title="前4小时15分钟成交额均值">15m均值</th><th>涨跌幅</th><th>多空比</th>';
             } else {
-                headerRow.innerHTML = '<th>排名</th><th>币种</th><th>价格</th><th>今日成交额</th><th>15m成交额</th><th>涨跌幅</th><th>多空比</th>';
+                headerRow.innerHTML = '<th>排名</th><th>币种</th><th>价格</th><th>今日成交额</th><th title="前4小时15分钟成交额均值">15m均值</th><th>涨跌幅</th><th>多空比</th>';
             }
             
             rows.sort((a, b) => b.gain_pct - a.gain_pct);
@@ -1143,7 +1194,7 @@
             });
         }
 
-        // 模拟交易数据缓存（用于前端实时计算盈亏）
+        // 实盘交易数据缓存（用于前端实时计算盈亏）
         let simTradeCache = null;
 
         // 用最新市场价格更新持仓盈亏（秒级实时）
@@ -1200,7 +1251,7 @@
             renderSimTrade(simTradeCache, false);
         }
 
-        // 渲染模拟交易面板
+        // 渲染实盘交易面板
         // fullRender=true: 重新构建整个表格DOM; false: 只更新数值（用于秒级刷新）
         function renderSimTrade(state, fullRender = true) {
             simTradeCache = state;
@@ -1210,25 +1261,22 @@
             
             // 账户统计
             const balance = account.balance || 0;
-            const totalPnl = account.total_pnl || 0;
             const winRate = account.win_rate || 0;
             const maxDd = account.max_drawdown || 0;
             const unrealizedPnl = summary.total_unrealized_pnl || 0;
             const posCount = summary.positions_count || 0;
             const maxPos = summary.max_positions || 5;
             
+            // 总权益与未实现盈亏联动
+            const effectiveBalance = balance + unrealizedPnl;
+            
             const elBalance = document.getElementById('sim_balance');
-            const elTotalPnl = document.getElementById('sim_total_pnl');
             const elUnrealized = document.getElementById('sim_unrealized_pnl');
             const elWinRate = document.getElementById('sim_win_rate');
             const elMaxDd = document.getElementById('sim_max_dd');
             const elPosCount = document.getElementById('sim_positions_count');
             
-            if (elBalance) elBalance.textContent = balance.toFixed(2) + ' USDT';
-            if (elTotalPnl) {
-                elTotalPnl.textContent = (totalPnl >= 0 ? '+' : '') + totalPnl.toFixed(2);
-                elTotalPnl.className = 'value ' + (totalPnl >= 0 ? 'up' : 'down');
-            }
+            if (elBalance) elBalance.textContent = effectiveBalance.toFixed(2) + ' USDT';
             if (elUnrealized) {
                 elUnrealized.textContent = (unrealizedPnl >= 0 ? '+' : '') + unrealizedPnl.toFixed(2);
                 elUnrealized.className = 'value ' + (unrealizedPnl >= 0 ? 'up' : 'down');
@@ -1275,6 +1323,7 @@
                         // 重新生成详情内容
                         detailRow.querySelector('td').innerHTML = `
                             <span class="detail-item"><span class="detail-label">盈亏%:</span> <span class="detail-value ${pnlPct >= 0 ? 'pnl-up' : 'pnl-down'}">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span></span>
+                            <span class="detail-item"><span class="detail-label">策略依据:</span> <span class="detail-value">${pos.signal_detail ? Object.entries(pos.signal_detail).map(([k,v]) => k + '=' + v).join(', ') : '-'}</span></span>
                             <span class="detail-item"><span class="detail-label">保证金:</span> <span class="detail-value">${pos.margin || 0} USDT</span></span>
                             <span class="detail-item"><span class="detail-label">杠杆:</span> <span class="detail-value">${pos.leverage || 1}x</span></span>
                             <span class="detail-item"><span class="detail-label">状态:</span> <span class="detail-value status-${statusColor}">${status}</span></span>
@@ -1314,6 +1363,7 @@
                 <tr class="sim-detail-row" data-detail-idx="${idx}">
                     <td colspan="4">
                         <span class="detail-item"><span class="detail-label">盈亏%:</span> <span class="detail-value ${pnlClass}">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span></span>
+                        <span class="detail-item"><span class="detail-label">策略依据:</span> <span class="detail-value">${pos.signal_detail ? Object.entries(pos.signal_detail).map(([k,v]) => k + '=' + v).join(', ') : '-'}</span></span>
                         <span class="detail-item"><span class="detail-label">保证金:</span> <span class="detail-value">${pos.margin || 0} USDT</span></span>
                         <span class="detail-item"><span class="detail-label">杠杆:</span> <span class="detail-value">${pos.leverage || 1}x</span></span>
                         <span class="detail-item"><span class="detail-label">状态:</span> <span class="detail-value ${statusClass}">${status}</span></span>
@@ -1340,7 +1390,19 @@
                     <tbody>${rows}</tbody>
                 </table>
             `;
+            // 恢复用户展开的详情行状态
+            expandedSimDetails.forEach(idx => {
+                const detailRow = wrap.querySelector(`[data-detail-idx="${idx}"]`);
+                const btn = wrap.querySelector(`[data-idx="${idx}"] .sim-expand-btn`);
+                if (detailRow) {
+                    detailRow.classList.add('show');
+                    if (btn) btn.textContent = '▼';
+                }
+            });
         }
+
+        // 记录用户展开的详情行索引，避免重新渲染时自动收起
+        const expandedSimDetails = new Set();
 
         // 折叠/展开持仓详情
         window.toggleSimDetail = function(idx, event) {
@@ -1351,13 +1413,15 @@
             if (detailRow.classList.contains('show')) {
                 detailRow.classList.remove('show');
                 if (btn) btn.textContent = '▶';
+                expandedSimDetails.delete(idx);
             } else {
                 detailRow.classList.add('show');
                 if (btn) btn.textContent = '▼';
+                expandedSimDetails.add(idx);
             }
         };
 
-        // 页面加载时也尝试拉取一次模拟交易数据
+        // 页面加载时也尝试拉取一次实盘交易数据
         fetch('/api/sim_trade')
             .then(r => r.json())
             .then(res => {

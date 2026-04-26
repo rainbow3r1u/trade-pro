@@ -180,6 +180,15 @@ class TradesAggregator:
 _aggregator: Optional[TradesAggregator] = None
 _aggregator_lock = threading.Lock()
 
+def _cleanup_loop():
+    """后台线程：每60秒清理一次过期数据"""
+    while True:
+        time.sleep(60)
+        try:
+            agg = get_aggregator()
+            agg.cleanup_old_data()
+        except Exception:
+            pass
 
 def get_aggregator() -> TradesAggregator:
     """获取全局聚合器实例"""
@@ -187,6 +196,9 @@ def get_aggregator() -> TradesAggregator:
     with _aggregator_lock:
         if _aggregator is None:
             _aggregator = TradesAggregator()
+            # 启动后台清理线程
+            t = threading.Thread(target=_cleanup_loop, daemon=True)
+            t.start()
         return _aggregator
 
 

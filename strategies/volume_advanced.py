@@ -40,7 +40,7 @@ class VolumeAdvancedStrategy(BaseStrategy):
     def _fetch_strategy1_pro_data(self) -> Dict[str, Any]:
         """通过 API 获取 strategy1_pro 数据，失败则 fallback 到本地文件"""
         # 优先通过 API 获取，确保和网站显示的数据源一致
-        ports = [getattr(config, 'WEB_PORT', 5003), 5003]
+        ports = [getattr(config, 'WEB_PORT', 5003)]
         for port in set(ports):
             try:
                 url = f'http://127.0.0.1:{port}/api/report/strategy1_pro'
@@ -58,11 +58,12 @@ class VolumeAdvancedStrategy(BaseStrategy):
 
         # fallback: 本地文件
         candidates = []
-        main_file = '/home/ubuntu/crypto-scanner/output/strategy1_pro.json'
+        base_dir = str(Path(__file__).parent.parent)
+        output_dir = os.path.join(base_dir, 'output')
+        main_file = os.path.join(output_dir, 'strategy1_pro.json')
         if os.path.exists(main_file):
             candidates.append(main_file)
 
-        output_dir = '/home/ubuntu/crypto-scanner/output'
         files = glob.glob(os.path.join(output_dir, 'strategy1_pro_*.json'))
         if files:
             files.sort(key=os.path.getmtime, reverse=True)

@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>追涨追踪器 - 5%→10%</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+            background: #0a0a1a; 
+            color: #e0e0e0; 
+            margin: 0; 
+            padding: 10px; 
+            font-size: 14px;
+            -webkit-text-size-adjust: 100%;
+        }
+        .header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            padding: 10px 0; 
+            border-bottom: 1px solid #333; 
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .header h1 { 
+            margin: 0; 
+            font-size: 17px; 
+            color: #00d4ff; 
+        }
+        .header .subtitle { 
+            font-size: 11px; 
+            color: #888; 
+            margin-top: 2px;
+        }
+        .nav-link { 
+            color: #00d4ff; 
+            text-decoration: none; 
+            font-size: 12px; 
+            padding: 5px 10px; 
+            border: 1px solid #00d4ff; 
+            border-radius: 4px; 
+            white-space: nowrap;
+        }
+        .nav-link:hover { 
+            background: #00d4ff22; 
+        }
+        .stats-bar { 
+            display: flex; 
+            gap: 8px; 
+            margin-bottom: 12px; 
+            flex-wrap: wrap;
+        }
+        .stat-item { 
+            background: #16213e; 
+            padding: 8px 12px; 
+            border-radius: 6px; 
+            border: 1px solid #333; 
+            flex: 1;
+            min-width: 80px;
+            text-align: center;
+        }
+        .stat-label { 
+            font-size: 10px; 
+            color: #888; 
+        }
+        .stat-value { 
+            font-size: 15px; 
+            font-weight: bold; 
+            color: #00d4ff; 
+        }
+
+        /* ========== 桌面端：表格 ========== */
+        .desktop-table-wrap {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            border-radius: 8px;
+        }
+        table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            font-size: 13px; 
+            background: #16213e; 
+            min-width: 700px;
+        }
+        th, td { 
+            padding: 10px 8px; 
+            text-align: center; 
+            border-bottom: 1px solid #333; 
+            white-space: nowrap;
+        }
+        th { 
+            background: #1a1a2e; 
+            color: #00d4ff; 
+            font-size: 12px; 
+            position: sticky; 
+            top: 0; 
+        }
+        tr:hover { 
+            background: #1a1a2e; 
+        }
+        .sym { 
+            font-weight: bold; 
+            color: #00d4ff; 
+        }
+        .gain { 
+            color: #00ff88; 
+            font-weight: bold;
+        }
+        .gain-low { 
+            color: #ffaa00; 
+        }
+        .target { 
+            color: #ff9500; 
+            font-weight: bold;
+        }
+        .vol-needed { 
+            color: #ff4757; 
+            font-weight: bold;
+        }
+        .timer { 
+            color: #e0e0e0; 
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .timer-warning { 
+            color: #ff4757; 
+        }
+        .status-reached { 
+            color: #00ff88; 
+            font-weight: bold;
+        }
+        .status-tracking { 
+            color: #00d4ff; 
+        }
+        .empty { 
+            text-align: center; 
+            padding: 40px; 
+            color: #666; 
+        }
+        .progress-bar { 
+            width: 100%; 
+            height: 4px; 
+            background: #333; 
+            border-radius: 2px; 
+            margin-top: 4px; 
+            overflow: hidden;
+        }
+        .progress-fill { 
+            height: 100%; 
+            background: linear-gradient(90deg, #00ff88, #ff9500); 
+            border-radius: 2px; 
+            transition: width 0.3s;
+        }
+
+        /* ========== 手机端：卡片列表 ========== */
+        .mobile-list {
+            display: none;
+        }
+        .m-card {
+            background: #16213e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 10px;
+        }
+        .m-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #333;
+        }
+        .m-card-symbol {
+            font-weight: bold;
+            color: #00d4ff;
+            font-size: 15px;
+        }
+        .m-card-status {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+        .m-card-status.reached {
+            background: #00ff8822;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+        .m-card-status.tracking {
+            background: #00d4ff22;
+            color: #00d4ff;
+            border: 1px solid #00d4ff;
+        }
+        .m-card-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px 0;
+            font-size: 13px;
+        }
+        .m-card-row .label {
+            color: #888;
+        }
+        .m-card-row .value {
+            font-weight: bold;
+        }
+        .m-card-timer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #333;
+            font-size: 12px;
+        }
+        .m-card-timer .time-item {
+            text-align: center;
+        }
+        .m-card-timer .time-label {
+            color: #888;
+            font-size: 10px;
+        }
+        .m-card-timer .time-value {
+            font-family: monospace;
+            font-size: 13px;
+        }
+
+        /* ========== 响应式切换 ========== */
+        @media (max-width: 768px) {
+            body { padding: 6px; font-size: 13px; }
+            .header h1 { font-size: 15px; }
+            .header .subtitle { font-size: 10px; }
+            .nav-link { font-size: 11px; padding: 4px 8px; }
+            .stat-value { font-size: 14px; }
+            .desktop-table-wrap {
+                display: none !important;
+            }
+            .mobile-list {
+                display: block;
+            }
+        }
+        @media (min-width: 769px) {
+            .desktop-table-wrap {
+                display: block;
+            }
+            .mobile-list {
+                display: none !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>📈 追涨追踪器</h1>
+            <div class="subtitle">追踪涨幅5%~10%的币，估算到10%还需多少成交量</div>
+        </div>
+        <a href="/" class="nav-link">← 返回监控</a>
+    </div>
+
+    <div class="stats-bar">
+        <div class="stat-item">
+            <div class="stat-label">追踪中</div>
+            <div class="stat-value" id="tracker_count">0</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-label">已达标(≥10%)</div>
+            <div class="stat-value" id="reached_count" style="color:#00ff88;">0</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-label">更新时间</div>
+            <div class="stat-value" id="updated_time" style="font-size:13px;">-</div>
+        </div>
+    </div>
+
+    <!-- 桌面端：表格 -->
+    <div class="desktop-table-wrap">
+        <table id="tracker_table">
+            <thead>
+                <tr>
+                    <th>币种</th>
+                    <th>进入涨幅</th>
+                    <th>当前涨幅</th>
+                    <th>目标(10%)</th>
+                    <th>今日成交</th>
+                    <th>还需成交</th>
+                    <th>已追踪</th>
+                    <th>剩余</th>
+                    <th>进度</th>
+                </tr>
+            </thead>
+            <tbody id="tbody">
+                <tr><td colspan="9" class="empty">加载中...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 手机端：卡片列表 -->
+    <div class="mobile-list" id="mobile_list">
+        <div class="empty">加载中...</div>
+    </div>
+
+    <script>
+        const tbody = document.getElementById('tbody');
+        const mobileList = document.getElementById('mobile_list');
+        const trackerCountEl = document.getElementById('tracker_count');
+        const reachedCountEl = document.getElementById('reached_count');
+        const updatedEl = document.getElementById('updated_time');
+        let trackerData = [];
+
+        function formatNumber(n) {
+            if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+            if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+            return n.toFixed(0);
+        }
+
+        function formatTime(seconds) {
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = seconds % 60;
+            if (h > 0) return `${h}h${m.toString().padStart(2, '0')}m`;
+            return `${m.toString().padStart(2, '0')}m${s.toString().padStart(2, '0')}s`;
+        }
+
+        function renderDesktop() {
+            if (trackerData.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" class="empty">暂无追踪中的币种（涨幅5%~10%）</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = trackerData.map(item => {
+                const progress = Math.min(100, (item.current_gain_pct / item.target_gain_pct) * 100);
+                const isWarning = item.remaining_seconds < 3600 && item.status !== 'reached';
+                const isReached = item.status === 'reached';
+                
+                const gainClass = item.current_gain_pct >= 8 ? 'gain' : 'gain-low';
+                const timerClass = isWarning ? 'timer-warning' : 'timer';
+                const statusText = isReached ? '<span class="status-reached">✓ 已达标</span>' : '<span class="status-tracking">追踪中</span>';
+
+                return `<tr>
+                    <td class="sym">${item.symbol}<br><small style="color:#888;font-size:11px;">${statusText}</small></td>
+                    <td class="gain-low">+${item.entry_gain_pct.toFixed(2)}%</td>
+                    <td class="${gainClass}">+${item.current_gain_pct.toFixed(2)}%</td>
+                    <td class="target">+${item.target_gain_pct.toFixed(0)}%</td>
+                    <td>${formatNumber(item.vol_24h_today)}</td>
+                    <td class="vol-needed">${isReached ? '-' : formatNumber(item.vol_needed)}</td>
+                    <td class="timer">${formatTime(item.elapsed_seconds)}</td>
+                    <td class="${timerClass}">${isReached ? '-' : formatTime(item.remaining_seconds)}</td>
+                    <td>
+                        <div style="font-size:11px;color:#888;">${progress.toFixed(1)}%</div>
+                        <div class="progress-bar"><div class="progress-fill" style="width:${progress}%"></div></div>
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+
+        function renderMobile() {
+            if (trackerData.length === 0) {
+                mobileList.innerHTML = '<div class="empty">暂无追踪中的币种（涨幅5%~10%）</div>';
+                return;
+            }
+
+            mobileList.innerHTML = trackerData.map(item => {
+                const progress = Math.min(100, (item.current_gain_pct / item.target_gain_pct) * 100);
+                const isReached = item.status === 'reached';
+                const statusClass = isReached ? 'reached' : 'tracking';
+                const statusLabel = isReached ? '✓ 已达标' : '追踪中';
+                
+                return `<div class="m-card">
+                    <div class="m-card-header">
+                        <span class="m-card-symbol">${item.symbol}</span>
+                        <span class="m-card-status ${statusClass}">${statusLabel}</span>
+                    </div>
+                    <div class="m-card-row">
+                        <span class="label">当前涨幅</span>
+                        <span class="value" style="color:${item.current_gain_pct >= 8 ? '#00ff88' : '#ffaa00'};">+${item.current_gain_pct.toFixed(2)}%</span>
+                    </div>
+                    <div class="m-card-row">
+                        <span class="label">目标涨幅</span>
+                        <span class="value" style="color:#ff9500;">+${item.target_gain_pct.toFixed(0)}%</span>
+                    </div>
+                    <div class="m-card-row">
+                        <span class="label">进入涨幅</span>
+                        <span class="value">+${item.entry_gain_pct.toFixed(2)}%</span>
+                    </div>
+                    <div class="m-card-row">
+                        <span class="label">今日成交</span>
+                        <span class="value">${formatNumber(item.vol_24h_today)}</span>
+                    </div>
+                    <div class="m-card-row">
+                        <span class="label">${isReached ? '已达标' : '还需成交'}</span>
+                        <span class="value" style="color:${isReached ? '#00ff88' : '#ff4757'};">${isReached ? '-' : formatNumber(item.vol_needed)}</span>
+                    </div>
+                    <div class="m-card-row">
+                        <span class="label">进度</span>
+                        <span class="value" style="font-size:12px;">${progress.toFixed(1)}%</span>
+                    </div>
+                    <div class="progress-bar" style="margin-top:4px;"><div class="progress-fill" style="width:${progress}%"></div></div>
+                    <div class="m-card-timer">
+                        <div class="time-item">
+                            <div class="time-label">已追踪</div>
+                            <div class="time-value">${formatTime(item.elapsed_seconds)}</div>
+                        </div>
+                        <div class="time-item">
+                            <div class="time-label">剩余</div>
+                            <div class="time-value" style="color:${item.remaining_seconds < 3600 && !isReached ? '#ff4757' : '#e0e0e0'};">${isReached ? '-' : formatTime(item.remaining_seconds)}</div>
+                        </div>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        function render() {
+            let trackingCount = 0;
+            let reachedCount = 0;
+            for (const item of trackerData) {
+                if (item.status === 'reached') reachedCount++;
+                else trackingCount++;
+            }
+            trackerCountEl.textContent = trackingCount;
+            reachedCountEl.textContent = reachedCount;
+            
+            renderDesktop();
+            renderMobile();
+        }
+
+        async function loadData() {
+            try {
+                const res = await fetch('/api/momentum_tracker?_=' + Date.now());
+                const data = await res.json();
+                if (data.code === 0) {
+                    trackerData = data.data || [];
+                    render();
+                    updatedEl.textContent = new Date().toLocaleTimeString('zh-CN');
+                }
+            } catch (e) {
+                console.error('加载失败:', e);
+            }
+        }
+
+        // 每3秒更新
+        loadData();
+        setInterval(loadData, 3000);
+    </script>
+</body>
+</html>

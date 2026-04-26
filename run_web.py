@@ -17,16 +17,17 @@ from market_monitor_app import (
     minute_aggregator_loop, daily_open_price_update_loop,
     hyperliquid_backfill_loop, sim_trade_broadcast_loop,
     bollinger_climb_background_loop,
-    load_vol_15m_from_cos, get_current_15m_slot, market_data, data_lock
+    load_vol_15m_from_cos, get_current_15m_slot, market_data, data_lock,
+    _refresh_snapshot_cache,
 )
 import threading
 
 init_market_data()
 
-# 从COS加载最近4小时的15分钟成交量历史
+# 从COS加载最近8小时的15分钟成交量历史（扩大窗口减少停机影响）
 try:
     current_slot = get_current_15m_slot()
-    vol_15m_hist = load_vol_15m_from_cos(current_slot, slots_count=16)
+    vol_15m_hist = load_vol_15m_from_cos(current_slot, slots_count=32)
     with data_lock:
         for symbol, slots in vol_15m_hist.items():
             market_data["vol_15m_history"][symbol] = slots
@@ -42,6 +43,7 @@ threading.Thread(target=daily_open_price_update_loop, daemon=True).start()
 threading.Thread(target=hyperliquid_backfill_loop, daemon=True).start()
 threading.Thread(target=sim_trade_broadcast_loop, daemon=True).start()
 threading.Thread(target=bollinger_climb_background_loop, daemon=True).start()
+threading.Thread(target=_refresh_snapshot_cache, daemon=True).start()
 
 socketio.run(
     app,
