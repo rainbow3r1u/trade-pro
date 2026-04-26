@@ -216,7 +216,37 @@ def close_position(pos, reason, close_price, pnl):
     
     if reason == "STOP_LOSS":
         set_cooldown(symbol, 30)  # 30分钟内不再开仓
+    # REPLACE_VOL_SURGE 不触发冷却期，也不重置账户
 ```
+
+### VOL_SURGE 满仓替换机制
+
+```python
+def close_weakest_position():
+    """满仓且有高倍VOL_SURGE时，替换最弱持仓"""
+    # 计算所有持仓未实现盈亏
+    pnl_list = [(pos, calculate_pnl(...), current_price) for pos in positions]
+    
+    profitable = [(p, pnl, price) for p, pnl, price in pnl_list if pnl > 0]
+    losing = [(p, pnl, price) for p, pnl, price in pnl_list if pnl <= 0]
+    
+    if profitable:
+        pos_to_close, pnl, close_price = max(profitable, key=lambda x: x[1])  # 盈利最高
+    else:
+        pos_to_close, pnl, close_price = max(losing, key=lambda x: x[1])      # 亏损最小
+    
+    close_position(pos_to_close, "REPLACE_VOL_SURGE", close_price, pnl)
+```
+
+**触发条件**：
+- `get_positions_count() >= MAX_POSITIONS`（满仓5/5）
+- 且存在 VOL_SURGE 信号 `ratio >= 5.0`
+
+**替换策略**：
+- 有盈利的持仓 → 平盈利最高的（落袋为安）
+- 都亏损 → 平亏损最小的（止损代价最低）
+
+**日志**：`[VOL_SURGE替换] 满仓且有N个高倍突增信号(ratio>=5.0)，替换最弱持仓`
 
 ### 联合保证金爆仓
 
