@@ -159,6 +159,28 @@ def is_in_cooldown(symbol: str) -> bool:
     return time.time() < cooldown_symbols.get(symbol, 0)
 ```
 
+### 日线涨幅第一过滤层（涨幅>20%过滤）
+
+**规则**：接到任何信号后，查询该币种当日1d K线，若从开盘（北京8:00）以来涨幅 **> 20%**，直接过滤跳过。
+
+```python
+def check_daily_gain_filter(symbol: str, max_gain_pct: float = 20.0) -> tuple[bool, float]:
+    resp = requests.get("https://api.binance.com/api/v3/klines",
+                        params={"symbol": symbol, "interval": "1d", "limit": 1}, timeout=5)
+    klines = resp.json()
+    open_price = float(klines[0][1])   # 北京8:00开盘价
+    close_price = float(klines[0][4])  # 最新价
+    gain_pct = (close_price - open_price) / open_price * 100
+    
+    if gain_pct > max_gain_pct:
+        return False, gain_pct  # 过滤掉
+    return True, gain_pct       # 通过
+```
+
+**触发时机**：`evaluate_and_open()` 中三个信号循环（VOL_SURGE/SURGE/BB_CLIMB）的最开头。
+
+**默认行为**：API 失败或异常时默认通过，不阻塞交易。
+
 ### 日止盈冷却（5次封顶）
 
 **规则**：同一币种在当天（北京时间8:00为日界）止盈满 **5 次**后，冷却到**次日北京8:00**才恢复开仓。

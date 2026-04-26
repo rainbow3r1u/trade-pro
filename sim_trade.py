@@ -357,6 +357,48 @@ def format_price(price: float) -> str:
     else:
         return f"{price:.2f}"
 
+def check_daily_gain_filter(symbol: str, max_gain_pct: float = 20.0) -> tuple[bool, float]:
+    """
+    日线涨幅第一过滤层。
+    查询该币种当日1d K线，计算从开盘（北京8:00 = UTC 00:00）以来的涨幅。
+    
+    返回: (是否通过过滤, 当日涨幅百分比)
+    - True  = 涨幅 ≤ max_gain_pct，通过过滤
+    - False = 涨幅 > max_gain_pct，过滤掉
+    """
+    try:
+        resp = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": symbol, "interval": "1d", "limit": 1},
+            timeout=5
+        )
+        if resp.status_code != 200:
+            return True, 0
+        
+        klines = resp.json()
+        if not klines:
+            return True, 0
+        
+        k = klines[0]
+        open_price = float(k[1])
+        close_price = float(k[4])
+        
+        if open_price <= 0:
+            return True, 0
+        
+        gain_pct = (close_price - open_price) / open_price * 100
+        
+        if gain_pct > max_gain_pct:
+            print(f"[日线涨幅过滤] {symbol} 当日涨幅 {gain_pct:.2f}% > {max_gain_pct}%，跳过")
+            return False, gain_pct
+        
+        return True, gain_pct
+        
+    except Exception as e:
+        print(f"[日线涨幅过滤错误] {symbol}: {e}")
+        return True, 0
+
+
 def check_spot_futures_divergence_once(symbol: str) -> bool:
     """
     检查现货与合约最近两根已完成1h K线的阴阳方向是否不一致。
@@ -865,6 +907,12 @@ def evaluate_and_open():
                 break
             
             symbol = sig.get("symbol", "")
+            
+            # 【第一过滤层】日线涨幅过滤
+            passed, _ = check_daily_gain_filter(symbol)
+            if not passed:
+                continue
+            
             ratio = sig.get("ratio", 0)
             vol_24h = sig.get("_vol_24h", 0)
             
@@ -914,6 +962,12 @@ def evaluate_and_open():
                 break
             
             symbol = sig.get("symbol", "")
+            
+            # 【第一过滤层】日线涨幅过滤
+            passed, _ = check_daily_gain_filter(symbol)
+            if not passed:
+                continue
+            
             total_delta_q = sig.get("total_delta_q", 0)
             vol_24h = sig.get("_vol_24h", 0)
             
@@ -958,6 +1012,12 @@ def evaluate_and_open():
                 break
             
             symbol = sig.get("symbol", "")
+            
+            # 【第一过滤层】日线涨幅过滤
+            passed, _ = check_daily_gain_filter(symbol)
+            if not passed:
+                continue
+            
             consecutive = sig.get("consecutive_hours", 0)
             vol_24h = sig.get("_vol_24h", 0)
             
