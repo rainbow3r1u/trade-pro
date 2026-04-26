@@ -569,6 +569,39 @@ def close_position(pos: dict, reason: str, close_price: float, pnl: float):
     if reason == "STOP_LOSS":
         set_cooldown(pos["symbol"], 30)
 
+def close_weakest_position():
+    """平仓一个持仓以腾出仓位给高倍VOL_SURGE
+    有盈利的平盈利最高的，都亏损的平亏损最小的
+    """
+    if not positions:
+        return False
+    
+    # 计算每个持仓的未实现盈亏
+    pnl_list = []
+    for pos in positions:
+        current_price = get_current_price(pos["symbol"])
+        if current_price <= 0:
+            continue
+        pnl = calculate_pnl(pos["entry_price"], current_price, pos["quantity"])
+        pnl_list.append((pos, pnl, current_price))
+    
+    if not pnl_list:
+        return False
+    
+    # 分离盈利和亏损
+    profitable = [(p, pnl, price) for p, pnl, price in pnl_list if pnl > 0]
+    losing = [(p, pnl, price) for p, pnl, price in pnl_list if pnl <= 0]
+    
+    if profitable:
+        # 有盈利的，平仓盈利最高的
+        pos_to_close, pnl, close_price = max(profitable, key=lambda x: x[1])
+    else:
+        # 都亏损，平仓亏损最小的（最接近0的）
+        pos_to_close, pnl, close_price = max(losing, key=lambda x: x[1])
+    
+    close_position(pos_to_close, "REPLACE_VOL_SURGE", close_price, pnl)
+    return True
+
 def handle_liquidation():
     """爆仓处理：保存记录并重置账户"""
     global account, positions, trade_log, signal_log
@@ -713,6 +746,13 @@ def evaluate_and_open():
             signals_with_vol.append(sig)
         # 按24h成交量降序，优先开成交量大的
         signals_with_vol.sort(key=lambda s: s.get("_vol_24h", 0), reverse=True)
+        
+        # 保守替换：满仓且存在高倍突增(ratio>=5.0)时，替换最弱持仓
+        if get_positions_count() >= MAX_POSITIONS and signals_with_vol:
+            high_ratio_signals = [s for s in signals_with_vol if s.get("ratio", 0) >= 5.0]
+            if high_ratio_signals:
+                print(f"[VOL_SURGE替换] 满仓且有{len(high_ratio_signals)}个高倍突增信号(ratio>=5.0)，替换最弱持仓")
+                close_weakest_position()
         
         for sig in signals_with_vol:
             if get_positions_count() >= MAX_POSITIONS:
