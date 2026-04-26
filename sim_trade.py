@@ -51,7 +51,7 @@ BASE_MARGIN = INITIAL_CAPITAL / MAX_POSITIONS  # 每仓位基础保证金 = 20 U
 TAKE_PROFIT_PCT = 50           # 止盈：盈利达到保证金的50%
 STOP_LOSS_WINDOW = 24          # 止损窗口：过去N小时1h K线最低价（24小时）
 MIN_STOP_LOSS_PCT = 0.005        # 最小止损距离：止损价至少比开盘价低0.5%
-LIQUIDATION_BUFFER = 5         # 爆仓缓冲：比理论爆仓价高5%（更安全）
+
 
 # 策略配置
 BB_CLIMB_ENABLED = True        # 启用布林爬坡信号（最低优先级）
@@ -354,11 +354,7 @@ def calculate_position(entry_price: float, margin: float, leverage: int) -> tupl
     quantity = position_value / entry_price
     return quantity, position_value
 
-def calculate_liquidation_price(entry_price: float, leverage: int, is_long: bool = True) -> float:
-    if is_long:
-        return entry_price * (1 - 1 / leverage)
-    else:
-        return entry_price * (1 + 1 / leverage)
+
 
 def calculate_stop_loss_price(entry_price: float, klines_min_price: float) -> float:
     """计算止损价：仅基于最后一个完整K线最低价，无额外保护"""
@@ -458,10 +454,6 @@ def open_position(symbol: str, signal_type: str, entry_price: float,
     # 止盈价
     take_profit_price = entry_price * (1 + TAKE_PROFIT_PCT / 100 / leverage)
     
-    # 爆仓价（5%缓冲）
-    theoretical_liq = calculate_liquidation_price(entry_price, leverage, is_long=True)
-    liquidation_price = theoretical_liq * (1 + LIQUIDATION_BUFFER / 100)
-    
     pos = {
         "symbol": symbol,
         "signal_type": signal_type,
@@ -475,7 +467,6 @@ def open_position(symbol: str, signal_type: str, entry_price: float,
         "stop_loss_price": stop_loss_price,
         "stop_loss_source": stop_loss_source,
         "take_profit_price": take_profit_price,
-        "liquidation_price": liquidation_price,
         "is_long": True,
     }
     
@@ -497,7 +488,6 @@ def open_position(symbol: str, signal_type: str, entry_price: float,
         "stop_loss_source": stop_loss_source,
         "signal_detail": signal_detail or {},
         "take_profit_price": take_profit_price,
-        "liquidation_price": liquidation_price,
     }
     trade_log.append(log_entry)
     signal_log.append(log_entry)
@@ -648,7 +638,6 @@ def check_positions():
         entry_price = pos["entry_price"]
         stop_loss = pos["stop_loss_price"]
         take_profit = pos["take_profit_price"]
-        liquidation_price = pos["liquidation_price"]
         
         pnl = calculate_pnl(entry_price, current_price, pos["quantity"], is_long=True)
         total_unrealized_pnl += pnl
@@ -865,21 +854,18 @@ def print_status():
     print(f"持仓: {get_positions_count()}/{MAX_POSITIONS} | 可用: {get_available_balance():.2f} USDT")
     
     if positions:
-        print(f"\n{'Symbol':<14} {'Entry':<10} {'Current':<10} {'Margin':<7} {'PnL%':<8} {'Liq%':<8} {'状态'}")
-        print("-" * 75)
+        print(f"\n{'Symbol':<14} {'Entry':<10} {'Current':<10} {'Margin':<7} {'PnL%':<8} {'状态'}")
+        print("-" * 70)
         for pos in positions:
             symbol = pos["symbol"]
             current = get_current_price(symbol)
             entry = pos["entry_price"]
             pnl_pct = (current - entry) / entry * 100
             margin = pos["margin"]
-            liq_pct = (current - pos['liquidation_price']) / entry * 100 if entry > 0 else 0
             
             # 判断状态
             if current >= pos["take_profit_price"]:
                 status = "✓止盈"
-            elif current <= pos["liquidation_price"]:
-                status = "💥爆仓"
             elif current <= pos["stop_loss_price"]:
                 status = "✗止损"
             else:
