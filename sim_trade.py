@@ -723,11 +723,8 @@ def evaluate_and_open():
     if available < 5:
         return  # 可用余额不足
     
-    if get_positions_count() >= MAX_POSITIONS:
-        return  # 已达最大持仓数
-    
     # 1. 15分钟成交量突增（第一优先级）
-    # 按24h成交量降序，优先开成交量大的
+    # 满仓时优先检查高倍VOL_SURGE替换，再处理正常开仓
     if VOL_SURGE_ENABLED:
         signals = get_vol_surge_signals()
         # 先获取成交量并过滤，再按成交量降序排序
@@ -753,6 +750,10 @@ def evaluate_and_open():
             if high_ratio_signals:
                 print(f"[VOL_SURGE替换] 满仓且有{len(high_ratio_signals)}个高倍突增信号(ratio>=5.0)，替换最弱持仓")
                 close_weakest_position()
+        
+        # 正常开仓（未满仓时）
+        if get_positions_count() >= MAX_POSITIONS:
+            return  # 已达最大持仓数，跳过后续策略
         
         for sig in signals_with_vol:
             if get_positions_count() >= MAX_POSITIONS:
@@ -958,11 +959,10 @@ def main():
             if positions:
                 check_positions()
             
-            # 每10秒评估信号
+            # 每10秒评估信号（满仓时也检查VOL_SURGE替换）
             if now - last_signal_check >= 10:
                 last_signal_check = now
-                if get_positions_count() < MAX_POSITIONS:
-                    evaluate_and_open()
+                evaluate_and_open()
             
             # 每60秒打印状态
             if now - last_status_time >= 60:
