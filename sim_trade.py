@@ -561,15 +561,18 @@ def close_position(pos: dict, reason: str, close_price: float, pnl: float):
     }
     trade_log.append(log_entry)
     
-    print(f"[平仓] {reason} {pos['symbol']} @ {format_price(close_price)}")
+    if reason == "LIQUIDATED_CROSS":
+        print(f"[联合爆仓强平] {pos['symbol']} @ {format_price(close_price)}")
+    else:
+        print(f"[平仓] {reason} {pos['symbol']} @ {format_price(close_price)}")
     print(f"       盈亏: {actual_pnl:.2f} USDT | 余额: {account['balance']:.2f} USDT | 胜率: {account['win_rate']:.0f}%")
     
     positions.remove(pos)
     
     save_state()
     
-    # 检测爆仓：记录并重置
-    if reason in ("LIQUIDATED", "LIQUIDATED_CROSS"):
+    # 联合爆仓检测：只有 LIQUIDATED_CROSS 才触发账户重置
+    if reason == "LIQUIDATED_CROSS":
         handle_liquidation()
     
     # 止损后设置30分钟冷却期
@@ -627,11 +630,10 @@ def handle_liquidation():
 def check_positions():
     """检查所有持仓状态
     
-    检测顺序（优先级从高到低）：
+    联合保证金模式检测顺序：
     1. 单个仓位止盈
     2. 单个仓位止损
-    3. 单个仓位爆仓（触及 liquidation_price）
-    4. 联合爆仓（总权益 <= 0，所有仓位保证金全部亏完）
+    3. 联合爆仓（总权益 <= 0，所有仓位一起强平，不设单个爆仓价）
     """
     positions_to_close = []
     total_unrealized_pnl = 0
@@ -661,18 +663,13 @@ def check_positions():
             positions_to_close.append((pos, "STOP_LOSS", current_price, pnl))
             continue
         
-        # 检测单个仓位爆仓（触及 liquidation_price）
-        if current_price <= liquidation_price:
-            positions_to_close.append((pos, "LIQUIDATED", current_price, pnl))
-            continue
-    
-    # 联合爆仓检测：总权益 = 余额 + 未实现盈亏
-    # 当所有持仓的保证金全部亏完（总权益 <= 0）时，爆仓
+        # 联合保证金模式下，不设单个仓位爆仓价。
+    # 只有当所有持仓的保证金全部亏完（总权益 <= 0）时，才触发联合爆仓，全部强平。
     total_equity = account["balance"] + total_unrealized_pnl
     
     if total_equity <= 0 and positions:
         # 触发联合爆仓，强平所有仓位
-        print(f"\n⚠️ 联合爆仓！总权益归零: {total_equity:.2f} USDT")
+        print(f"\n⚠️ 联合爆仓！总权益归零: {total_equity:.2f} USDT，全部仓位将被强平")
         for pos in positions:
             symbol = pos["symbol"]
             current_price = get_current_price(symbol)

@@ -40,16 +40,61 @@
 
 ## 自动交易（sim_trade.py）
 
-### 买入优先级
+### 关键常量
+
+```python
+MAX_POSITIONS = 5
+DEFAULT_LEVERAGE = 10
+TAKE_PROFIT_PCT = 50          # 止盈：盈利达保证金50%（10x=价格涨5%）
+SURGE_MIN_BUY_RATIO = 0.70    # SURGE买入比最低70%
+VOL_SURGE_MIN_RATIO = 3.0     # VOL_SURGE突增倍数最低3.0x
+SURGE_MIN_DELTA_Q = 500000    # SURGE大单突增最低50万USDT
+MIN_24H_VOLUME = 3_000_000    # 24h成交额最低300万USDT
+
+EXCLUDE_SYMBOLS = {
+    'BTCUSDT', 'ETHUSDT', 'SOLUSDT',
+    'TSLAUSDT', 'NVDAUSDT', 'AMZNUSDT', 'GOOGLUSDT', 'AAPLUSDT',
+    'COINUSDT', 'MSTRUSDT', 'METAUSDT', 'TSMUSDT',
+    'XAUUSDT', 'XAGUSDT', 'XAUTUSDT', 'NATGASUSDT',
+    # 稳定币对
+    'USDCUSDT', 'RLUSDUSDT', 'UUSDT', 'XUSDUSDT', 'USD1USDT',
+    'FDUSDUSDT', 'TUSDUSDT', 'PAXUSDT', 'BUSDUSDT', 'SUSDUSDT',
+}
+```
+
+### 买入优先级与仓位分配
 
 ```
 1. VOL_SURGE → 20U margin (全仓 BASE_MARGIN)
 2. SURGE     → 10U margin (半仓)
 3. BB_CLIMB  → 5U margin  (1/4仓)
+4. BB_CAND   → 禁用
 ```
 
 每个策略过滤后独立按各自规则排序，然后按优先级尝试开仓。
 最多同时持仓 **5** 个币种。
+
+### 可用余额计算
+
+```python
+def get_available_balance():
+    used_margin = sum(p["margin"] for p in positions)
+    return account["balance"] - used_margin
+```
+
+**注意**: `account["balance"]` 是总资金池，`open_position()` **不得** 再执行 `balance -= margin`。
+
+### 开仓前置检查
+
+```python
+def open_position(symbol, signal_type, entry_price, ...):
+    if symbol in EXCLUDE_SYMBOLS: return False      # 排除列表
+    if get_position(symbol): return False           # 已在持仓中
+    if is_in_cooldown(symbol): return False         # 冷却期内
+    if get_positions_count() >= MAX_POSITIONS: return False  # 满仓
+    if get_available_balance() < 5: return False    # 可用余额不足5U
+    ...
+```
 
 ### 开仓流程
 
@@ -63,6 +108,77 @@ def open_position(symbol, margin, leverage, signal_type):
     # 6. 创建持仓字典，append 到 positions
     # 7. 立即 save_state()
     # ⚠️ 绝不执行 account["balance"] -= margin
+```
+
+### 信号获取与过滤（交易脚本端）
+
+```python
+def get_vol_surge_signals():
+    signals = api_get("/api/vol_surge").get("data", [])
+    return [s for s in signals 
+            if s.get("ratio", 0) >= VOL_SURGE_MIN_RATIO 
+            and time.time() - s.get("start_time", 0) < 300]
+
+def get_surge_signals():
+    signals = api_get("/api/surge").get("data", [])
+    return [s for s in signals 
+            if s.get("avg_buy_ratio", 0) >= SURGE_MIN_BUY_RATIO 
+            and time.time() - s.get("last_t", 0) < 300]
+
+def get_bb_climb_signals():
+    data = api_get("/api/bollinger_climb")
+    # BB爬坡缓存超过5分钟，信号废弃
+    if time.time() - data.get("updated_at", 0) > 300:
+        return []
+    return data.get("data", [])
+```
+
+### 收阴过滤（双阴过滤）
+
+```python
+def check_recent_1h_candles_bearish(symbol: str) -> bool:
+    """检查最近3根1h K线中是否有至少2根收阴（close < open）
+    返回 True 表示不应开仓"""
+    resp = requests.get("https://api.binance.com/api/v3/klines",
+                        params={"symbol": symbol, "interval": "1h", "limit": 3}, timeout=5)
+    klines = resp.json()
+    bearish_count = sum(1 for k in klines if float(k[4]) < float(k[1]))
+    return bearish_count >= 2
+```
+
+VOL_SURGE 和 SURGE 策略开仓前都必须通过此过滤。
+
+### 止损冷却期
+
+```python
+def set_cooldown(symbol: str, minutes: int = 30):
+    """止损平仓后30分钟内不再开仓同一币种"""
+    cooldown_symbols[symbol] = time.time() + minutes * 60
+
+def is_in_cooldown(symbol: str) -> bool:
+    return time.time() < cooldown_symbols.get(symbol, 0)
+```
+
+### evaluate_and_open() 完整流程
+
+```python
+def evaluate_and_open():
+    # 1. VOL_SURGE（第一优先级）
+    signals = get_vol_surge_signals()
+    # 过滤: EXCLUDE_SYMBOLS、重复持仓、ratio<3.0、24h成交量<300万
+    # 按24h成交量降序排列
+    # 逐个开仓，每个前检查双阴过滤
+    
+    # 2. SURGE（第二优先级）
+    signals = get_surge_signals()
+    # 过滤: EXCLUDE_SYMBOLS、重复持仓、total_delta_q<50万、24h成交量<300万
+    # 按24h成交量降序排列
+    # 逐个开仓，每个前检查双阴过滤
+    
+    # 3. BB_CLIMB（第三优先级）
+    signals = get_bb_climb_signals()
+    # 过滤: EXCLUDE_SYMBOLS、重复持仓、consecutive_hours<阈值、24h成交量<300万
+    # 按24h成交量降序排列
 ```
 
 ### 止损计算
@@ -110,11 +226,20 @@ def check_positions():
     total_equity = account["balance"] + total_unrealized
     
     if total_equity <= 0 and positions:
-        # 1. 逐仓强平所有 position
-        # 2. account["balance"] = INITIAL_CAPITAL (100)
-        # 3. positions.clear()
-        # 4. save_state()
+        # 1. 全部仓位标记为 LIQUIDATED_CROSS，逐仓强平
+        # 2. handle_liquidation() 重置账户
+        # 3. account["balance"] = INITIAL_CAPITAL (100)
+        # 4. positions.clear()
+        # 5. trade_log.clear()
+        # 6. save_state()
 ```
+
+**核心规则**：
+- **不设单个仓位爆仓价**。`liquidation_price` 字段仅作参考，不用于触发强平
+- **唯一爆仓条件**：`total_equity = balance + unrealized_pnl <= 0`
+- **全部一起强平**：一旦触发，所有持仓同时平仓，不是逐个清算
+- **日志标记**：平仓原因用 `LIQUIDATED_CROSS`，打印 `[联合爆仓强平] {symbol}`
+- **账户重置**：`handle_liquidation()` 保存历史记录到 `/tmp/sim_trade_history_*.json`，然后重置为100U
 
 ## 追涨追踪器（Momentum Tracker）
 
