@@ -80,6 +80,8 @@ EXCLUDE_SYMBOLS = {
 
 # ========== 全局状态 ==========
 cooldown_symbols = {}  # {symbol: cooldown_end_timestamp} 止损后冷却期
+daily_take_profit_count = {}  # {(symbol, date_str): count} 当日止盈次数（北京8:00为界）
+daily_tp_cooldown_symbols = {}  # {symbol: cooldown_end_timestamp} 日止盈5次冷却到次日北京8:00
 
 account = {
     "balance": INITIAL_CAPITAL,
@@ -236,6 +238,37 @@ def is_in_cooldown(symbol: str) -> bool:
 def set_cooldown(symbol: str, minutes: int = 30):
     """设置币种冷却期"""
     cooldown_symbols[symbol] = time.time() + minutes * 60
+
+def get_beijing_date_str() -> str:
+    """获取当前北京时间日期字符串（北京8:00为日界）"""
+    # 北京时间 = UTC+8，北京8:00 = UTC 00:00
+    # 直接用UTC日期即可
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+def is_in_daily_tp_cooldown(symbol: str) -> bool:
+    """检查币种是否在日止盈冷却期内（止盈5次后冷却到次日北京8:00）"""
+    end_time = daily_tp_cooldown_symbols.get(symbol, 0)
+    return time.time() < end_time
+
+def record_take_profit_and_check_cooldown(symbol: str):
+    """
+    记录一次止盈。如果当日（北京8:00为界）止盈满5次，
+    启动冷却到次日北京时间8:00。
+    """
+    date_str = get_beijing_date_str()
+    key = (symbol, date_str)
+    daily_take_profit_count[key] = daily_take_profit_count.get(key, 0) + 1
+    count = daily_take_profit_count[key]
+    
+    if count >= 5:
+        # 冷却到次日北京8:00（即次日UTC 00:00）
+        now_utc = datetime.now(timezone.utc)
+        tomorrow_utc = (now_utc + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        cooldown_end = tomorrow_utc.timestamp()
+        daily_tp_cooldown_symbols[symbol] = cooldown_end
+        print(f"[日止盈冷却] {symbol} 当日已止盈{count}次，冷却至次日北京8:00 ({datetime.fromtimestamp(cooldown_end).strftime('%Y-%m-%d %H:%M')})")
+    else:
+        print(f"[日止盈计数] {symbol} 当日止盈 {count}/5 次")
 
 def check_recent_1h_candles_bearish(symbol: str) -> bool:
     """检查最近3根1h K线中是否有至少2根收阴
@@ -494,7 +527,11 @@ def open_position(symbol: str, signal_type: str, entry_price: float,
         return False  # 已在持仓中
     
     if is_in_cooldown(symbol):
-        return False  # 冷却期内
+        return False  # 止损冷却期内
+    
+    if is_in_daily_tp_cooldown(symbol):
+        print(f"[日止盈冷却] {symbol} 处于日止盈冷却期，跳过开仓")
+        return False  # 日止盈冷却期内（当日已止盈5次）
     
     if get_positions_count() >= MAX_POSITIONS:
         return False  # 已达最大持仓数
@@ -626,6 +663,10 @@ def close_position(pos: dict, reason: str, close_price: float, pnl: float):
     # 联合爆仓检测：只有 LIQUIDATED_CROSS 才触发账户重置
     if reason == "LIQUIDATED_CROSS":
         handle_liquidation()
+    
+    # 止盈时记录日止盈计数
+    if reason == "TAKE_PROFIT":
+        record_take_profit_and_check_cooldown(pos["symbol"])
     
     # 止损后设置30分钟冷却期
     if reason == "STOP_LOSS":
@@ -990,6 +1031,9 @@ def save_state():
         "account": account,
         "positions": positions,
         "trade_log": trade_log[-100:],
+        "cooldown_symbols": cooldown_symbols,
+        "daily_take_profit_count": {f"{k[0]}#{k[1]}": v for k, v in daily_take_profit_count.items()},
+        "daily_tp_cooldown_symbols": daily_tp_cooldown_symbols,
     }
     # 原子写入 + 文件锁，防止与 web 服务同时读写导致 JSON 损坏
     import tempfile

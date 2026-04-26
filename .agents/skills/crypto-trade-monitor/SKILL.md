@@ -98,6 +98,14 @@ if total_equity <= 0 and positions:
 - 任意1根不一致 → 立即以 `SPOT_FUTURES_DIVERGENCE` 平仓
 - 不看具体价格数值，不保存状态，不轮询
 
+## 日止盈冷却（5次封顶）
+
+同一币种当天（北京8:00为日界）止盈满 **5 次**后，冷却到**次日北京8:00**：
+- `daily_take_profit_count = {(symbol, date_str): count}` — 日止盈计数
+- `daily_tp_cooldown_symbols = {symbol: timestamp}` — 冷却截止时间
+- 止盈时自动计数，满5次即触发冷却
+- 与止损30分钟冷却独立并行
+
 ## 文件职责索引
 
 | 文件 | 职责 |

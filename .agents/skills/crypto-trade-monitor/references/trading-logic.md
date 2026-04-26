@@ -159,6 +159,28 @@ def is_in_cooldown(symbol: str) -> bool:
     return time.time() < cooldown_symbols.get(symbol, 0)
 ```
 
+### 日止盈冷却（5次封顶）
+
+**规则**：同一币种在当天（北京时间8:00为日界）止盈满 **5 次**后，冷却到**次日北京8:00**才恢复开仓。
+
+```python
+def record_take_profit_and_check_cooldown(symbol: str):
+    date_str = get_beijing_date_str()  # 北京8:00=UTC 00:00
+    key = (symbol, date_str)
+    daily_take_profit_count[key] = daily_take_profit_count.get(key, 0) + 1
+    
+    if daily_take_profit_count[key] >= 5:
+        # 冷却到次日北京8:00
+        tomorrow_utc = (now_utc + timedelta(days=1)).replace(hour=0, minute=0, second=0)
+        daily_tp_cooldown_symbols[symbol] = tomorrow_utc.timestamp()
+```
+
+**触发时机**：`close_position()` 中 `reason == "TAKE_PROFIT"` 时自动调用。
+
+**检查时机**：`open_position()` 中前置检查，与止损冷却独立并行。
+
+**状态持久化**：`daily_take_profit_count` 和 `daily_tp_cooldown_symbols` 随 `save_state()` 写入 `/tmp/sim_trade_state.json`。
+
 ### evaluate_and_open() 完整流程
 
 ```python
