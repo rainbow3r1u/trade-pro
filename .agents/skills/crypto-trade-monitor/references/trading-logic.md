@@ -228,20 +228,34 @@ def evaluate_and_open():
 ### 止损计算
 
 ```python
-def calculate_stop_loss_price(symbol, entry_price, leverage):
+def get_stop_loss_price(symbol, entry_price, leverage):
     # 第一优先级：前1h K线最低价
     klines_1h = get_1h_klines(symbol, limit=1)
     low_1h = float(klines_1h[0][3])  # k[3] = low
     
     if low_1h < entry_price:
-        return low_1h
+        stop_loss = low_1h
+        source = "1h"
+    else:
+        # 回退：前4h K线最低价
+        klines_4h = get_1h_klines(symbol, limit=4)
+        low_4h = min(float(k[3]) for k in klines_4h)
+        stop_loss = min(low_4h, entry_price)
+        source = "4h"
     
-    # 回退：前4h K线最低价
-    klines_4h = get_1h_klines(symbol, limit=4)
-    low_4h = min(float(k[3]) for k in klines_4h)
-    return min(low_4h, entry_price)
-    # 若4h_low也 >= entry_price，止损设在 entry_price
+    # 兜底：最小止损距离保护（止损价至少低于开仓价2%）
+    min_stop = entry_price * (1 - MIN_STOP_LOSS_PCT)  # MIN_STOP_LOSS_PCT = 0.02
+    if stop_loss > min_stop:
+        stop_loss = min_stop
+        source = f"min_{source}"
+    
+    return stop_loss, source
 ```
+
+**最小止损距离保护**：当K线最低价计算出的止损距离开仓价 **< 2%** 时，强制使用 `开仓价 × 0.98` 作为止损价。
+- 目的：防止横盘时K线最低价过于接近开仓价，导致正常市场噪声触发止损
+- 10x杠杆下，2%价格变动 = 亏损20%保证金（约-4U/20U仓位）
+- 原 `MIN_STOP_LOSS_PCT = 0.005`（0.5%）定义了但**未在代码中使用**，已修复为0.02并实际生效
 
 ### 止盈
 

@@ -77,6 +77,7 @@ DEFAULT_LEVERAGE = 10
 BASE_MARGIN = 20
 MIN_24H_VOLUME = 3_000_000   # 现货口径
 TAKE_PROFIT_PCT = 50         # 盈利达保证金50%止盈（10x=价格涨5%）
+MIN_STOP_LOSS_PCT = 0.02     # 最小止损距离2%（止损价至少低于开仓价2%）
 VOL_SURGE_THRESHOLD = 3.0    # 15m成交量 > 4h均值3倍
 MAX_MINUTE_KLINES = 120      # 每币种保留2小时
 MAX_HOURLY_KLINES = 36       # 每币种保留36小时

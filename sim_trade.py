@@ -50,7 +50,7 @@ BASE_MARGIN = INITIAL_CAPITAL / MAX_POSITIONS  # 每仓位基础保证金 = 20 U
 # 止盈止损配置
 TAKE_PROFIT_PCT = 50           # 止盈：盈利达到保证金的50%
 STOP_LOSS_WINDOW = 24          # 止损窗口：过去N小时1h K线最低价（24小时）
-MIN_STOP_LOSS_PCT = 0.005        # 最小止损距离：止损价至少比开盘价低0.5%
+MIN_STOP_LOSS_PCT = 0.02         # 最小止损距离：止损价至少低于开仓价2%（10x杠杆下=亏损20%保证金）
 
 
 # 策略配置
@@ -302,8 +302,12 @@ def get_stop_loss_price(symbol: str, entry_price: float) -> tuple:
     
     第一优先级：前一小时K线最低价
     第二优先级：前一个4小时K线最低价（标准区间 08/12/16/20/00/04）
+    兜底：最小止损距离保护（止损价至少低于开仓价2%）
     Fallback：开仓价
     """
+    stop_loss_price = entry_price
+    source = "entry"
+    
     try:
         # 1. 取前一小时完整K线
         resp = requests.get(
@@ -319,24 +323,32 @@ def get_stop_loss_price(symbol: str, entry_price: float) -> tuple:
                 
                 # 第一优先级：前一小时K线最低价（必须低于开仓价才有效）
                 if kline_1h_low < entry_price:
-                    return kline_1h_low, "1h"
-                
-                # 2. 回退到前一个4小时K线（取倒数第二根已完成的4h K线）
-                resp4 = requests.get(
-                    "https://api.binance.com/api/v3/klines",
-                    params={"symbol": symbol, "interval": "4h", "limit": 2},
-                    timeout=5
-                )
-                if resp4.status_code == 200:
-                    klines4 = resp4.json()
-                    if len(klines4) >= 2:
-                        last_4h = klines4[-2]
-                        kline_4h_low = float(last_4h[3])
-                        return min(kline_4h_low, entry_price), "4h"
+                    stop_loss_price = kline_1h_low
+                    source = "1h"
+                else:
+                    # 2. 回退到前一个4小时K线（取倒数第二根已完成的4h K线）
+                    resp4 = requests.get(
+                        "https://api.binance.com/api/v3/klines",
+                        params={"symbol": symbol, "interval": "4h", "limit": 2},
+                        timeout=5
+                    )
+                    if resp4.status_code == 200:
+                        klines4 = resp4.json()
+                        if len(klines4) >= 2:
+                            last_4h = klines4[-2]
+                            kline_4h_low = float(last_4h[3])
+                            stop_loss_price = min(kline_4h_low, entry_price)
+                            source = "4h"
     except:
         pass
-    # Fallback: 止损放在开仓价
-    return entry_price, "entry"
+    
+    # 【兜底】最小止损距离保护：止损价至少低于开仓价2%
+    min_stop_price = entry_price * (1 - MIN_STOP_LOSS_PCT)
+    if stop_loss_price > min_stop_price:
+        stop_loss_price = min_stop_price
+        source = f"min_{source}"
+    
+    return stop_loss_price, source
 
 def format_price(price: float) -> str:
     """根据价格大小自动调整显示精度（不使用科学计数法）"""
@@ -717,13 +729,18 @@ def close_position(pos: dict, reason: str, close_price: float, pnl: float):
 def close_weakest_position():
     """平仓一个持仓以腾出仓位给高倍VOL_SURGE
     有盈利的平盈利最高的，都亏损的平亏损最小的
+    
+    注意：VOL_SURGE策略的持仓不能被替换（signal_type以'VOL_SURGE_'开头）
     """
     if not positions:
         return False
     
-    # 计算每个持仓的未实现盈亏
+    # 计算每个持仓的未实现盈亏，排除VOL_SURGE策略的持仓
     pnl_list = []
     for pos in positions:
+        # VOL_SURGE策略的持仓不能被替换
+        if pos.get("signal_type", "").startswith("VOL_SURGE_"):
+            continue
         current_price = get_current_price(pos["symbol"])
         if current_price <= 0:
             continue
@@ -731,6 +748,7 @@ def close_weakest_position():
         pnl_list.append((pos, pnl, current_price))
     
     if not pnl_list:
+        print("[VOL_SURGE替换] 所有持仓均为VOL_SURGE策略，无法替换")
         return False
     
     # 分离盈利和亏损
