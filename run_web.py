@@ -13,10 +13,10 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 from market_monitor_app import (
     app, socketio, init_market_data,
-    ws_update_loop, hyperliquid_ws_loop, write_loop,
+    ws_update_loop, write_loop,
     minute_aggregator_loop, daily_open_price_update_loop,
-    hyperliquid_backfill_loop, sim_trade_broadcast_loop,
-    bollinger_climb_background_loop,
+    sim_trade_broadcast_loop,
+    bb_daily_background_loop,
     load_vol_15m_from_cos, get_current_15m_slot, market_data, data_lock,
     _refresh_snapshot_cache,
 )
@@ -36,13 +36,11 @@ except Exception as e:
     print(f"[VOL_15M_COS] 启动加载失败: {e}")
 
 threading.Thread(target=ws_update_loop, daemon=True).start()
-threading.Thread(target=hyperliquid_ws_loop, daemon=True).start()
 threading.Thread(target=write_loop, daemon=True).start()
 threading.Thread(target=minute_aggregator_loop, daemon=True).start()
 threading.Thread(target=daily_open_price_update_loop, daemon=True).start()
-threading.Thread(target=hyperliquid_backfill_loop, daemon=True).start()
 threading.Thread(target=sim_trade_broadcast_loop, daemon=True).start()
-threading.Thread(target=bollinger_climb_background_loop, daemon=True).start()
+threading.Thread(target=bb_daily_background_loop, daemon=True).start()
 threading.Thread(target=_refresh_snapshot_cache, daemon=True).start()
 
 socketio.run(

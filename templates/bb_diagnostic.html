@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>BB诊断 — V7</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; background: #0d1117; color: #c9d1d9; padding: 10px; -webkit-text-size-adjust: 100%; }
+a { color: #58a6ff; text-decoration: none; }
+.nav { margin-bottom: 6px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.nav a { font-size: 12px; padding: 3px 0; }
+.nav a.now { color: #d2991d; }
+.updated { font-size: 10px; color: #484f58; margin-bottom: 10px; }
+
+/* ---- BIG passed badge ---- */
+.passed-badge { text-align: center; padding: 14px 0; margin: 8px 0; }
+.passed-badge .big { font-size: 64px; font-weight: 800; line-height: 1; }
+.passed-badge .big.green { color: #3fb950; }
+.passed-badge .big.red  { color: #f85149; }
+.passed-badge .sub  { font-size: 12px; color: #8b949e; margin-top: 4px; }
+
+/* ---- Mini stats ---- */
+.mini-stats { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+.chip { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; flex: 1; min-width: 70px; text-align: center; }
+.chip .n { font-size: 18px; font-weight: 700; }
+.chip .l { font-size: 9px; color: #8b949e; }
+.chip.w .n { color: #d2991d; }
+.chip.f .n { color: #f85149; }
+.chip.g .n { color: #3fb950; }
+
+/* ---- Funnel (compact for mobile) ---- */
+.funnel { margin: 10px 0; }
+.f-stage { display: flex; align-items: center; margin-bottom: 1px; font-size: 11px; }
+.f-num { width: 18px; text-align: center; color: #484f58; flex-shrink: 0; font-size: 10px; }
+.f-label { width: 110px; padding-right: 4px; text-align: right; color: #8b949e; flex-shrink: 0; }
+.f-arrow { width: 14px; text-align: center; color: #30363d; flex-shrink: 0; font-size: 10px; }
+.f-bar-wrap { flex: 1; height: 18px; background: #0d1117; border-radius: 3px; overflow: hidden; border: 1px solid #21262d; min-width: 60px; }
+.f-bar-fill { height: 100%; border-radius: 2px; display: flex; align-items: center; padding-left: 6px; font-size: 10px; font-weight: 600; }
+.f-count { width: 100px; padding-left: 6px; font-size: 10px; color: #c9d1d9; flex-shrink: 0; white-space: nowrap; }
+.f-rej .f-label { color: #f85149; }
+.f-rej .f-bar-fill { background: #da3633; color: #fff; }
+.f-skip .f-bar-fill { background: #21262d; color: #8b949e; }
+.f-end .f-label { color: #3fb950; font-weight: 700; font-size: 12px; }
+.f-end .f-bar-fill { background: #238636; color: #fff; }
+.f-head .f-label { color: #c9d1d9; font-weight: 700; }
+.f-drop { height: 12px; display: flex; align-items: center; }
+.f-drop .line { width: 1px; height: 100%; background: #30363d; margin-left: 73px; }
+.f-drop .n { font-size: 9px; color: #484f58; margin-left: 8px; }
+
+/* ---- Table ---- */
+.t-wrap { background: #161b22; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; margin-top: 12px; }
+.t-bar { padding: 6px 8px; border-bottom: 1px solid #30363d; display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.t-bar span { color: #8b949e; font-size: 10px; }
+.t-bar select, .t-bar input { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 4px 6px; border-radius: 4px; font-size: 11px; }
+.t-bar select { max-width: 140px; }
+.t-bar input { width: 100px; }
+.t-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; max-height: 50vh; overflow-y: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 10px; min-width: 700px; }
+th { text-align: left; padding: 4px 6px; background: #0d1117; color: #8b949e; font-weight: 500; white-space: nowrap; position: sticky; top: 0; z-index: 1; }
+td { padding: 3px 6px; border-top: 1px solid #21262d; white-space: nowrap; }
+tr:active td { background: #1c2129; }
+.sym { color: #58a6ff; }
+.tag { font-size: 9px; padding: 1px 5px; border-radius: 3px; }
+.tag.below_mid { background: #30363d; color: #8b949e; }
+.tag.off_upper { background: #5c4a1f; color: #d2991d; }
+.tag.vol_low { background: #5c2d18; color: #db6d28; }
+.tag.hl_fail { background: #2d225c; color: #a371f7; }
+.tag.atr_fail { background: #30363d; color: #6e7681; }
+.tag.cons_short { background: #2d185c; color: #7c4dff; }
+.tag.excluded { background: #30363d; color: #484f58; }
+.num-col { text-align: right; font-variant-numeric: tabular-nums; }
+
+@media (min-width: 600px) {
+  body { padding: 16px; max-width: 800px; margin: 0 auto; }
+  .f-label { width: 130px; }
+  .f-count { width: 130px; }
+  .f-drop .line { margin-left: 85px; }
+}
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="/">行情</a>
+  <a href="/params">参数</a>
+  <a href="/backtest">回测</a>
+  <a href="/momentum">追涨</a>
+  <a class="now" href="/bb_diagnostic">BB诊断</a>
+</div>
+<div class="updated" id="updated">加载中...</div>
+
+<div class="passed-badge">
+  <div class="big red" id="passBig">—</div>
+  <div class="sub">BB信号通过 / 总检测币种</div>
+</div>
+
+<div class="mini-stats" id="miniStats"></div>
+
+<div class="funnel" id="funnel"></div>
+
+<div class="t-wrap">
+  <div class="t-bar">
+    <span id="tcnt">0</span>
+    <span>卡在:</span>
+    <select id="stageFilter" onchange="filterByStage(this.value)"><option value="all">全部</option></select>
+    <input type="text" placeholder="搜币种..." oninput="filterSymbol(this.value)" id="searchInput">
+  </div>
+  <div class="t-scroll">
+  <table>
+    <thead><tr>
+      <th>币种</th>
+      <th>失败阶段</th>
+      <th class="num-col">收盘价</th>
+      <th class="num-col">上轨</th>
+      <th class="num-col">偏离</th>
+      <th class="num-col">日量</th>
+      <th class="num-col">24均量</th>
+      <th class="num-col">量比</th>
+      <th class="num-col">波幅</th>
+      <th class="num-col">连续</th>
+    </tr></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  </div>
+</div>
+
+<script>
+let allData = {breakdown:{}, symbols:{}, total:0};
+let curF = 'all', curQ = '';
+
+const STAGES = [
+  {key:'excluded',          label:'1.排除列表'},
+  {key:'too_short',         label:'2.数据不足'},
+  {key:'not_trading',       label:'3.未交易'},
+  {key:'bb_calc_fail',      label:'3.BB计算'},
+  {key:'bb_idx_fail',       label:'3.BB索引'},
+  {key:'below_mid',         label:'4.收盘>中轨'},
+  {key:'off_upper',         label:'5.在上轨±8%内'},
+  {key:'buy_ratio_low',     label:'6.买盘比'},
+  {key:'hl_fail',           label:'7.HL爬升'},
+  {key:'atr_fail',          label:'8.ATR波幅'},
+  {key:'consecutive_short', label:'9.连续≥4天'},
+  {key:'vol_low',           label:'10.量能>1.2x'},
+];
+const SM = {}; STAGES.forEach(s => SM[s.key]=s);
+const ORDER = ['excluded','too_short','not_trading','bb_calc_fail','bb_idx_fail','below_mid','off_upper','buy_ratio_low','hl_fail','atr_fail','consecutive_short','vol_low'];
+const TAG = {below_mid:'below_mid',off_upper:'off_upper',vol_low:'vol_low',hl_fail:'hl_fail',atr_fail:'atr_fail',consecutive_short:'cons_short',excluded:'excluded'};
+
+async function refresh() {
+  try {
+    let r = await fetch('/api/bb_diagnostic');
+    let d = await r.json();
+    if (d.code !== 0) return;
+    allData = d;
+    let t = new Date(d.updated_at * 1000);
+    document.getElementById('updated').textContent =
+      '刷新: ' + t.toLocaleString('zh-CN',{hour12:false}) + ' UTC  |  每30秒';
+    buildFilter();
+    render();
+  } catch(e) { document.getElementById('updated').textContent = '错误: '+e; }
+}
+
+function buildFilter() {
+  let sel = document.getElementById('stageFilter');
+  let b = allData.breakdown;
+  sel.innerHTML = '<option value="all">全部</option>';
+  for (let k of ORDER) { if (b[k]) { let s = SM[k]; sel.innerHTML += '<option value="'+k+'">'+(s?s.label:k)+' ('+b[k]+')</option>'; }}
+}
+
+function render() {
+  let b = allData.breakdown;
+  let total = allData.total;
+  let passed = b.passed || 0;
+  let excl = b.excluded || 0;
+  let entered = total - excl;
+
+  // Big badge
+  let big = document.getElementById('passBig');
+  big.textContent = passed;
+  big.className = 'big ' + (passed > 0 ? 'green' : 'red');
+  document.querySelector('.passed-badge .sub').textContent =
+    'BB信号通过 / '+total+' 币种检测';
+
+  // Mini stats
+  let ms = document.getElementById('miniStats');
+  let afterVol = entered - (b.below_mid||0) - (b.off_upper||0) - (b.buy_ratio_low||0) - (b.vol_low||0);
+  ms.innerHTML =
+    '<div class="chip"><div class="n">'+entered+'</div><div class="l">进入检测</div></div>'+
+    '<div class="chip w"><div class="n">'+(b.off_upper||0)+'</div><div class="l">偏离上轨⑤</div></div>'+
+    '<div class="chip f"><div class="n">'+(b.vol_low||0)+'</div><div class="l">量能不足⑩</div></div>'+
+    '<div class="chip"><div class="n">'+afterVol+'</div><div class="l">通过⑦量能</div></div>';
+
+  // Funnel
+  let el = document.getElementById('funnel');
+  let pipeline = [
+    {label:'排除列表',      enter: total,   rej: excl,  cls:'other'},
+    {label:'数据够',        enter: entered, rej: (b.too_short||0)+(b.not_trading||0)+(b.bb_calc_fail||0)+(b.bb_idx_fail||0), cls:'other'},
+    {label:'收盘>中轨',     enter: 0,       rej: b.below_mid||0, cls:'below_mid'},
+    {label:'在上轨±8%内',   enter: 0,       rej: b.off_upper||0, cls:'off_upper'},
+    {label:'买盘比',        enter: 0,       rej: b.buy_ratio_low||0, cls:'other'},
+    {label:'HL爬升',        enter: 0,       rej: b.hl_fail||0, cls:'hl_fail'},
+    {label:'ATR波幅',       enter: 0,       rej: b.atr_fail||0, cls:'atr_fail'},
+    {label:'连续≥4天',      enter: 0,       rej: b.consecutive_short||0, cls:'cons_short'},
+    {label:'量能>1.2x均量', enter: 0,       rej: b.vol_low||0, cls:'vol_low'},
+  ];
+  let remaining = entered;
+  for (let i = 2; i < pipeline.length; i++) { pipeline[i].enter = remaining; remaining -= pipeline[i].rej; }
+  let maxE = Math.max(total, 1);
+
+  let h = '<div class="f-stage f-head"><span class="f-num"></span><span class="f-label">检测阶段</span><span class="f-arrow"></span><div class="f-bar-wrap" style="background:transparent;border:none;"></div><span class="f-count">淘汰 / 剩余</span></div>';
+  for (let p of pipeline) {
+    let rejW = (p.rej/maxE*100).toFixed(0);
+    let remain = p.enter - p.rej;
+    let isRej = p.rej > 0;
+    h += '<div class="f-stage '+(isRej?'f-rej':'f-skip')+'">'+
+      '<span class="f-num"></span>'+
+      '<span class="f-label">'+p.label+'</span>'+
+      '<span class="f-arrow">→</span>'+
+      '<div class="f-bar-wrap"><div class="f-bar-fill '+p.cls+'" style="width:'+rejW+'%">'+(isRej?'-'+p.rej:'')+'</div></div>'+
+      '<span class="f-count">'+(isRej?('<b style="color:#f85149">-'+p.rej+'</b>'):'-0')+' <span style="color:#484f58">剩'+remain+'</span></span>'+
+      '</div>';
+    h += '<div class="f-drop"><div class="line"></div><div class="n">'+remain+' ↓</div></div>';
+  }
+  h += '<div class="f-stage f-end"><span class="f-num"></span><span class="f-label">✓ 通过全部</span><span class="f-arrow"></span><div class="f-bar-wrap"><div class="f-bar-fill" style="width:'+(passed/maxE*100).toFixed(0)+'%">'+(passed>0?'PASS':'0')+'</div></div><span class="f-count"></span></div>';
+  el.innerHTML = h;
+
+  // Table
+  let syms = allData.symbols;
+  let rows = [];
+  for (let sym in syms) { let s = syms[sym]; rows.push({symbol:sym, ...s}); }
+  let order = {below_mid:0, off_upper:1, hl_fail:2, atr_fail:3, consecutive_short:4, vol_low:5};
+  rows.sort((a,b) => {
+    let oa = order[a.reason] ?? 9, ob = order[b.reason] ?? 9;
+    if (oa !== ob) return oa - ob;
+    if (a.reason === 'off_upper') return (a.gap_pct||99) - (b.gap_pct||99);
+    if (a.reason === 'vol_low') return (a.vol_ratio||99) - (b.vol_ratio||99);
+    return 0;
+  });
+
+  let html = '', cnt = 0;
+  for (let r of rows) {
+    if (curF !== 'all' && r.reason !== curF) continue;
+    if (curQ && !r.symbol.toLowerCase().includes(curQ)) continue;
+    let tc = TAG[r.reason] || 'other';
+    let tl = (SM[r.reason]||{}).label || r.reason;
+    html += '<tr>'+
+      '<td class="sym">'+r.symbol+'</td>'+
+      '<td><span class="tag '+tc+'">'+tl+'</span></td>'+
+      '<td class="num-col">'+(r.close!=null?r.close.toFixed(6):'-')+'</td>'+
+      '<td class="num-col">'+(r.upper!=null?r.upper.toFixed(6):'-')+'</td>'+
+      '<td class="num-col">'+(r.gap_pct!=null?r.gap_pct.toFixed(1)+'%':'-')+'</td>'+
+      '<td class="num-col">'+(r.q!=null?fn(r.q):'-')+'</td>'+
+      '<td class="num-col">'+(r.avg_vol_24!=null?fn(r.avg_vol_24):'-')+'</td>'+
+      '<td class="num-col">'+(r.vol_ratio!=null?r.vol_ratio.toFixed(2)+'x':'-')+'</td>'+
+      '<td class="num-col">'+(r.range!=null?r.range.toFixed(6):'-')+'</td>'+
+      '<td class="num-col">'+(r.consecutive!=null?r.consecutive:'-')+'</td>'+
+      '</tr>';
+    cnt++;
+  }
+  document.getElementById('tbody').innerHTML = html;
+  document.getElementById('tcnt').textContent = cnt+' 币种';
+}
+
+function fn(n) { if (n>=1e9) return (n/1e9).toFixed(1)+'B'; if (n>=1e6) return (n/1e6).toFixed(1)+'M'; if (n>=1e3) return (n/1e3).toFixed(1)+'K'; return String(Math.round(n)); }
+
+function filterByStage(v) { curF = v; render(); }
+function filterSymbol(q) { curQ = q.toLowerCase(); render(); }
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

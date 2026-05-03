@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>回测引擎 V7</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0e17; color: #c9d1d9; font-family: 'Courier New', monospace; padding: 20px; }
+h1 { color: #58a6ff; font-size: 1.4em; }
+.sub { color: #8b949e; font-size: 0.85em; margin-bottom: 16px; }
+a { color: #58a6ff; text-decoration: none; }
+.grid { display: grid; grid-template-columns: 360px 1fr; gap: 20px; }
+.card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+.card h2 { color: #58a6ff; font-size: 1.0em; margin-bottom: 10px; border-bottom: 1px solid #30363d; padding-bottom: 6px; }
+label { display: block; color: #8b949e; font-size: 0.85em; margin: 8px 0 3px; }
+input, select { width: 100%; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 10px; border-radius: 4px; font-family: inherit; font-size: 0.9em; }
+input:focus, select:focus { border-color: #58a6ff; outline: none; }
+.btn { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-family: inherit; font-size: 0.9em; font-weight: bold; transition: .2s; }
+.btn-run { background: #238636; color: #fff; width: 100%; margin-top: 12px; }
+.btn-run:hover { background: #2ea043; }
+.btn-run:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
+.btn-deploy { background: #da3633; color: #fff; }
+.btn-deploy:hover { background: #f85149; }
+.btn-deploy:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
+.result-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #21262d; font-size: 0.85em; }
+.result-row:hover { background: #1c2128; }
+.val-good { color: #3fb950; }
+.val-bad { color: #f85149; }
+.val-neutral { color: #f0883e; }
+.val-highlight { color: #58a6ff; }
+#status { padding: 8px; border-radius: 4px; margin-bottom: 10px; font-size: 0.85em; }
+.status-running { background: #1a2a1a; color: #3fb950; }
+.status-error { background: #2a1a1a; color: #f85149; }
+.status-done { background: #1a1a2a; color: #58a6ff; }
+#results-container { max-height: 600px; overflow-y: auto; }
+.section-title { color: #8b949e; font-size: 0.8em; margin: 10px 0 6px; padding-bottom: 3px; border-bottom: 1px solid #21262d; }
+.current-params { font-size: 0.8em; color: #8b949e; margin-bottom: 12px; }
+.current-params span { color: #f0883e; }
+.deploy-area { margin-top: 12px; padding-top: 10px; border-top: 1px solid #30363d; }
+#deployBtn { width: 100%; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>V7 Hybrid 回测引擎</h1>
+<div class="sub">
+    <a href="/">← 监控</a> | <a href="/params">参数面板</a> | <a href="/momentum">追涨追踪</a>
+</div>
+
+<div class="grid">
+    <div class="card">
+        <h2>搜索参数</h2>
+        <div class="current-params" id="currentParams">加载中...</div>
+
+        <label>VS放量倍数范围</label>
+        <select id="vs_ratio">
+            <option value="1-3">1-3x (宽松)</option>
+            <option value="1-5">1-5x</option>
+            <option value="1-10" selected>1-10x (全部)</option>
+            <option value="2-6">2-6x</option>
+            <option value="3-8">3-8x</option>
+        </select>
+
+        <label>搜索次数</label>
+        <select id="trials">
+            <option value="100">100 (快速)</option>
+            <option value="500">500 (中等)</option>
+            <option value="1000">1000 (标准)</option>
+            <option value="2000" selected>2000 (完整)</option>
+        </select>
+
+        <label>币种数量</label>
+        <select id="symbols">
+            <option value="100">100</option>
+            <option value="200" selected>200</option>
+            <option value="524">524 (全部)</option>
+        </select>
+
+        <button class="btn btn-run" id="runBtn" onclick="runBacktest()">运行回测</button>
+
+        <div class="section-title">搜索参数</div>
+        <div style="font-size:0.8em;color:#8b949e;">
+          VS ratio: 随机范围 | VS min_gain: 随机0.5-2.9%
+        </div>
+        <div class="section-title">固定参数 (V7最优)</div>
+        <div style="font-size:0.8em;color:#8b949e;">
+            period=30 | std=2.5 | daily_gain=10%<br>
+            min_hours=4 | hl_window=5 | hl_min=3<br>
+            vol_filter=1M | margin=20 | leverage=10<br>
+            tp=50% | sl=2% | max_dtp=4 | 纯BB绑定
+        </div>
+    </div>
+
+    <div>
+        <div id="status" style="display:none"></div>
+        <div class="card">
+            <h2>搜索结果 <span id="resultCount" style="color:#8b949e;"></span></h2>
+            <div id="results-container">
+                <div style="color:#8b949e;text-align:center;padding:40px;" id="emptyState">
+                    点击「运行回测」开始
+                </div>
+            </div>
+            <div class="deploy-area" id="deployArea" style="display:none">
+                <select id="deploySelect" style="margin-bottom:6px;"></select>
+                <button class="btn btn-deploy" id="deployBtn" onclick="deployParams()">部署所选参数</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let lastResults = [];
+let currentParams = {};
+
+async function loadCurrentParams() {
+    try {
+        let r = await fetch('/api/backtest/current_params');
+        currentParams = await r.json();
+        let s = '';
+        for (let [k, v] of Object.entries(currentParams)) {
+            s += `<span>${k}=${v}</span> `;
+        }
+        document.getElementById('currentParams').innerHTML = '当前实盘: ' + s;
+        // Set form to current values
+        if (currentParams.SPOT_BB_PERIOD) document.getElementById('bb_period').value = currentParams.SPOT_BB_PERIOD;
+        if (currentParams.SPOT_BB_STD_MULT) document.getElementById('bb_std').value = currentParams.SPOT_BB_STD_MULT;
+        if (currentParams.SPOT_GAIN_FILTER_PCT) document.getElementById('gain_pct').value = currentParams.SPOT_GAIN_FILTER_PCT;
+    } catch(e) {}
+}
+
+async function runBacktest() {
+    let btn = document.getElementById('runBtn');
+    let status = document.getElementById('status');
+    btn.disabled = true;
+    btn.textContent = '运行中...';
+    status.style.display = 'block';
+    status.className = 'status-running';
+    status.textContent = '回测引擎运行中，请耐心等待...';
+
+    let ratioRange = document.getElementById('vs_ratio').value.split('-').map(Number);
+
+    try {
+        let r = await fetch('/api/backtest/hybrid', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                trials: parseInt(document.getElementById('trials').value),
+                symbols: parseInt(document.getElementById('symbols').value),
+                vs_ratio_min: ratioRange[0],
+                vs_ratio_max: ratioRange[1]
+            })
+        });
+        let data = await r.json();
+
+        if (data.error) {
+            status.className = 'status-error';
+            status.textContent = '错误: ' + data.error;
+            return;
+        }
+
+        lastResults = data.top_results || [];
+        status.className = 'status-done';
+        status.textContent = `完成! ${data.trials}次试验 / ${data.symbols}币种 / ${data.elapsed_sec}秒`;
+        document.getElementById('resultCount').textContent = `(前${lastResults.length}名)`;
+        renderResults(lastResults);
+
+        if (lastResults.length > 0) {
+            document.getElementById('deployArea').style.display = 'block';
+            let sel = document.getElementById('deploySelect');
+            sel.innerHTML = '';
+            lastResults.forEach((r, i) => {
+                let opt = document.createElement('option');
+                opt.value = i;
+                let bb = r.bb_params;
+                opt.textContent = `#${i+1} comb=${r.combined_return.toFixed(1)}% p=${bb.period} std=${bb.std_mult} gain=${bb.daily_gain_pct}%`;
+                sel.appendChild(opt);
+            });
+        }
+    } catch(e) {
+        status.className = 'status-error';
+        status.textContent = '请求失败: ' + e.message;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '运行回测';
+    }
+}
+
+function renderResults(results) {
+    let html = '';
+    results.forEach((r, i) => {
+        let bb = r.bb_params;
+        let vs = r.vs_params;
+        let cls = r.combined_return >= 0 ? 'val-good' : 'val-bad';
+        let gp = vs.min_gain_pct ? vs.min_gain_pct.toFixed(1) : '0.0';
+        html += `<div class="result-row" style="cursor:pointer" onclick="selectResult(${i})" id="row${i}">
+            <span><b style="color:#58a6ff">#${i+1}</b></span>
+            <span class="${cls}">综合 <b>${r.combined_return.toFixed(1)}%</b></span>
+            <span>现货 ${r.spot_return.toFixed(1)}%</span>
+            <span class="val-highlight">合约 ${r.futures_return.toFixed(1)}%</span>
+            <span>回撤 ${r.combined_dd.toFixed(1)}%</span>
+            <span style="color:#8b949e">ratio=${vs.min_ratio.toFixed(1)}x gain>=${gp}%</span>
+        </div>`;
+    });
+    document.getElementById('results-container').innerHTML = html;
+    document.getElementById('emptyState').style.display = 'none';
+}
+
+function selectResult(idx) {
+    document.getElementById('deploySelect').value = idx;
+    // Highlight
+    document.querySelectorAll('.result-row').forEach(el => el.style.background = '');
+    document.getElementById('row'+idx).style.background = '#1a2a3a';
+}
+
+async function deployParams() {
+    if (!confirm('确定要部署所选参数到实盘？这将重启交易服务。')) return;
+
+    let idx = parseInt(document.getElementById('deploySelect').value);
+    let r = lastResults[idx];
+    let bb = r.bb_params;
+
+    document.getElementById('deployBtn').disabled = true;
+    document.getElementById('deployBtn').textContent = '部署中...';
+
+    try {
+        let resp = await fetch('/api/backtest/deploy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                bb_period: bb.period,
+                bb_std: bb.std_mult,
+                bb_min_hours: bb.min_hours,
+                bb_hl_window: bb.hl_window,
+                bb_hl_min: bb.hl_min,
+                daily_gain: bb.daily_gain_pct,
+                fut_max_daily_tp: r.vs_params.max_daily_tp
+            })
+        });
+        let d = await resp.json();
+        if (d.deployed) {
+            alert('部署成功！交易服务已重启。\n备份: ' + d.backup);
+            loadCurrentParams();
+        } else {
+            alert('部署失败: ' + JSON.stringify(d));
+        }
+    } catch(e) {
+        alert('部署错误: ' + e.message);
+    } finally {
+        document.getElementById('deployBtn').disabled = false;
+        document.getElementById('deployBtn').textContent = '部署所选参数';
+    }
+}
+
+loadCurrentParams();
+</script>
+</body>
+</html>

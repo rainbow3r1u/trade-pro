@@ -23,14 +23,14 @@ from utils.logger import get_logger
 
 
 BOLLINGER_CLIMB_CONFIG = {
-    "period": 20,
-    "std_mult": 2,
+    "period": 30,
+    "std_mult": 2.5,
     "upper_tolerance_pct": 0.08,
     "buy_ratio_threshold": 0.55,
     "buy_ratio_skip_default": True,
     "volume_ratio": 1.2,
-    "hl_tolerance_window": 3,
-    "hl_tolerance_min": 2,
+    "hl_tolerance_window": 5,
+    "hl_tolerance_min": 3,
     "atr_period": 14,
     "atr_enabled": True,
     "exclude_symbols": {
@@ -38,6 +38,9 @@ BOLLINGER_CLIMB_CONFIG = {
         'TSLAUSDT', 'NVDAUSDT', 'AMZNUSDT', 'GOOGLUSDT', 'AAPLUSDT',
         'COINUSDT', 'MSTRUSDT', 'METAUSDT', 'TSMUSDT',
         'XAUUSDT', 'XAGUSDT', 'XAUTUSDT', 'NATGASUSDT',
+        'USDCUSDT', 'RLUSDUSDT', 'UUSDT', 'XUSDUSDT', 'USD1USDT',
+        'FDUSDUSDT', 'TUSDUSDT', 'PAXUSDT', 'BUSDUSDT', 'SUSDUSDT',
+        'USDEUSDT',
     },
 }
 

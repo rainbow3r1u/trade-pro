@@ -101,7 +101,7 @@
         .sim-stat-item .value { color: #fff; font-size: 14px; font-weight: bold; margin-top: 4px; }
         .sim-stat-item .value.up { color: #00ff88; }
         .sim-stat-item .value.down { color: #ff4757; }
-        #sim_positions_wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        #sim_positions_wrap, #spot_positions_wrap, #futures_positions_wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
         .sim-positions-table {
             width: 100%;
             min-width: 420px;
@@ -369,6 +369,8 @@
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
         <h1 style="margin:0;">📊 全量行情监控</h1>
         <a href="/momentum" style="color:#ff9500;text-decoration:none;font-size:13px;padding:6px 12px;border:1px solid #ff9500;border-radius:4px;">📈 追涨追踪器 →</a>
+        <a href="/params" style="color:#58a6ff;text-decoration:none;font-size:13px;padding:6px 12px;border:1px solid #58a6ff;border-radius:4px;">⚙️ 参数面板 →</a>
+        <a href="/backtest" style="color:#3fb950;text-decoration:none;font-size:13px;padding:6px 12px;border:1px solid #3fb950;border-radius:4px;">🔬 回测引擎 →</a>
     </div>
     <div class="info">
         共 <span id="count">0</span> 个USDT永续合约 | 
@@ -376,33 +378,74 @@
         最后更新: <span id="updated">-</span>
     </div>
 
-    <!-- 实盘交易面板 -->
-    <div class="sim-trade-panel" id="sim_trade_panel">
-        <h2 class="collapsible" onclick="togglePanel('sim_trade_content')">🤖 实盘交易持仓<span class="toggle-icon">▼</span></h2>
-        <div class="sim-trade-content" id="sim_trade_content">
-            <div class="sim-stats" id="sim_stats">
+    <!-- V7 双账户面板: 现货 + 合约 -->
+    <!-- 现货账户 -->
+    <div class="sim-trade-panel" id="spot_panel" style="border-color: #00ff88;">
+        <h2 class="collapsible" onclick="togglePanel('spot_content')" style="color: #00ff88;">📦 现货账户 (V7 BB策略)<span class="toggle-icon">▼</span></h2>
+        <div class="sim-trade-content" id="spot_content">
+            <div class="sim-stats" id="spot_stats">
                 <div class="sim-stat-item">
-                    <div class="label">总权益</div>
-                    <div class="value" id="sim_balance">-</div>
+                    <div class="label">权益</div>
+                    <div class="value" id="spot_equity">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">余额</div>
+                    <div class="value" id="spot_balance">-</div>
                 </div>
                 <div class="sim-stat-item">
                     <div class="label">未实现盈亏</div>
-                    <div class="value" id="sim_unrealized_pnl">-</div>
+                    <div class="value" id="spot_unrealized">-</div>
                 </div>
                 <div class="sim-stat-item">
                     <div class="label">胜率</div>
-                    <div class="value" id="sim_win_rate">-</div>
+                    <div class="value" id="spot_win_rate">-</div>
                 </div>
                 <div class="sim-stat-item">
                     <div class="label">最大回撤</div>
-                    <div class="value" id="sim_max_dd">-</div>
+                    <div class="value" id="spot_max_dd">-</div>
                 </div>
                 <div class="sim-stat-item">
                     <div class="label">持仓/最大</div>
-                    <div class="value" id="sim_positions_count">-</div>
+                    <div class="value" id="spot_positions_count">-</div>
                 </div>
             </div>
-            <div id="sim_positions_wrap">
+            <div id="spot_positions_wrap">
+                <div class="sim-empty">加载中...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 合约账户 -->
+    <div class="sim-trade-panel" id="futures_panel" style="border-color: #ff4757;">
+        <h2 class="collapsible" onclick="togglePanel('futures_content')" style="color: #ff4757;">🔥 合约账户 (V7 VS策略)<span class="toggle-icon">▼</span></h2>
+        <div class="sim-trade-content" id="futures_content">
+            <div class="sim-stats" id="futures_stats">
+                <div class="sim-stat-item">
+                    <div class="label">权益</div>
+                    <div class="value" id="futures_equity">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">余额</div>
+                    <div class="value" id="futures_balance">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">未实现盈亏</div>
+                    <div class="value" id="futures_unrealized">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">胜率</div>
+                    <div class="value" id="futures_win_rate">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">最大回撤</div>
+                    <div class="value" id="futures_max_dd">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">持仓/最大</div>
+                    <div class="value" id="futures_positions_count">-</div>
+                </div>
+            </div>
+            <div id="futures_positions_wrap">
                 <div class="sim-empty">加载中...</div>
             </div>
         </div>
@@ -1194,89 +1237,106 @@
             });
         }
 
-        // 实盘交易数据缓存（用于前端实时计算盈亏）
+        // V7 双账户实盘交易数据缓存
         let simTradeCache = null;
 
-        // 用最新市场价格更新持仓盈亏（秒级实时）
+        // 用最新市场价格更新持仓盈亏（秒级实时）- V7双账户
         function updateSimTradeRealtime() {
-            if (!simTradeCache || !simTradeCache.positions || simTradeCache.positions.length === 0) return;
+            if (!simTradeCache) return;
             
-            let totalUnrealized = 0;
             let changed = false;
             
-            simTradeCache.positions.forEach(pos => {
-                const symbol = pos.symbol;
-                const entryPrice = pos.entry_price || 0;
-                const quantity = pos.quantity || 0;
-                
-                // 从 allData 获取最新价格
-                const info = allData[symbol];
-                if (!info || !info.price) return;
-                
-                const currentPrice = info.price;
-                if (currentPrice !== pos.current_price) {
-                    pos.current_price = currentPrice;
-                    changed = true;
-                }
-                
-                if (currentPrice > 0 && entryPrice > 0) {
-                    pos.unrealized_pnl = (currentPrice - entryPrice) * quantity;
-                    pos.unrealized_pnl_pct = ((currentPrice - entryPrice) / entryPrice) * 100;
-                }
-                
-                // 重新判断状态
-                const tp = pos.take_profit_price || Infinity;
-                const sl = pos.stop_loss_price || 0;
-                const liq = pos.liquidation_price || 0;
-                if (currentPrice >= tp) {
-                    pos.status = '止盈'; pos.status_color = 'profit';
-                } else if (currentPrice <= liq) {
-                    pos.status = '爆仓'; pos.status_color = 'liquidation';
-                } else if (currentPrice <= sl) {
-                    pos.status = '止损'; pos.status_color = 'loss';
-                } else {
-                    pos.status = '持仓中'; pos.status_color = 'hold';
-                }
-                
-                totalUnrealized += pos.unrealized_pnl;
-            });
-            
-            if (changed && simTradeCache.summary) {
-                simTradeCache.summary.total_unrealized_pnl = totalUnrealized;
-                const balance = (simTradeCache.account && simTradeCache.account.balance) || 0;
-                simTradeCache.summary.effective_balance = balance + totalUnrealized;
+            function updatePositions(positions) {
+                if (!positions || positions.length === 0) return 0;
+                let totalUnrealized = 0;
+                positions.forEach(pos => {
+                    const symbol = pos.symbol;
+                    const entryPrice = pos.entry_price || 0;
+                    const quantity = pos.quantity || 0;
+                    
+                    const info = allData[symbol];
+                    if (!info || !info.price) return;
+                    
+                    const currentPrice = info.price;
+                    if (currentPrice !== pos.current_price) {
+                        pos.current_price = currentPrice;
+                        changed = true;
+                    }
+                    
+                    if (currentPrice > 0 && entryPrice > 0) {
+                        pos.unrealized_pnl = (currentPrice - entryPrice) * quantity;
+                        pos.unrealized_pnl_pct = ((currentPrice - entryPrice) / entryPrice) * 100;
+                    }
+                    
+                    // 重新判断状态
+                    const tp = pos.tp_price || pos.take_profit_price || Infinity;
+                    const sl = pos.sl_price || pos.stop_loss_price || 0;
+                    const liq = pos.liquidation_price || 0;
+                    if (currentPrice >= tp) {
+                        pos.status = '止盈'; pos.status_color = 'profit';
+                    } else if (liq > 0 && currentPrice <= liq) {
+                        pos.status = '爆仓'; pos.status_color = 'liquidation';
+                    } else if (currentPrice <= sl) {
+                        pos.status = '止损'; pos.status_color = 'loss';
+                    } else {
+                        pos.status = '持仓中'; pos.status_color = 'hold';
+                    }
+                    
+                    totalUnrealized += pos.unrealized_pnl;
+                });
+                return totalUnrealized;
             }
             
-            // 重新渲染
+            // 更新现货持仓
+            const spotUnrealized = updatePositions(simTradeCache.spot_positions);
+            // 更新合约持仓
+            const futUnrealized = updatePositions(simTradeCache.futures_positions);
+            
+            if (changed && simTradeCache.summary) {
+                simTradeCache.summary.spot_unrealized_pnl = spotUnrealized;
+                simTradeCache.summary.futures_unrealized_pnl = futUnrealized;
+                simTradeCache.summary.total_unrealized_pnl = spotUnrealized + futUnrealized;
+                
+                const spotBalance = (simTradeCache.spot_account && simTradeCache.spot_account.balance) || 0;
+                const futBalance = (simTradeCache.futures_account && simTradeCache.futures_account.balance) || 0;
+                simTradeCache.summary.spot_effective_balance = spotBalance + spotUnrealized;
+                simTradeCache.summary.futures_effective_balance = futBalance + futUnrealized;
+                simTradeCache.summary.total_effective_balance = spotBalance + futBalance + spotUnrealized + futUnrealized;
+            }
+            
+            // 重新渲染（秒级刷新只更新数值）
             renderSimTrade(simTradeCache, false);
         }
 
-        // 渲染实盘交易面板
-        // fullRender=true: 重新构建整个表格DOM; false: 只更新数值（用于秒级刷新）
-        function renderSimTrade(state, fullRender = true) {
-            simTradeCache = state;
-            const account = state.account || {};
-            const summary = state.summary || {};
-            const positions = state.positions || [];
+        // 渲染单个账户面板
+        // prefix: 'spot' 或 'futures'
+        function renderAccountPanel(account, positions, prefix, maxPos, expandedSet, fullRender) {
+            if (!account) {
+                // 旧格式兼容: 如果账户不存在，显示未启用
+                const wrap = document.getElementById(prefix + '_positions_wrap');
+                if (wrap && fullRender) wrap.innerHTML = '<div class="sim-empty">未启用</div>';
+                return;
+            }
             
-            // 账户统计
             const balance = account.balance || 0;
             const winRate = account.win_rate || 0;
             const maxDd = account.max_drawdown || 0;
-            const unrealizedPnl = summary.total_unrealized_pnl || 0;
-            const posCount = summary.positions_count || 0;
-            const maxPos = summary.max_positions || 5;
             
-            // 总权益与未实现盈亏联动
+            let unrealizedPnl = 0;
+            positions.forEach(p => { unrealizedPnl += (p.unrealized_pnl || 0); });
             const effectiveBalance = balance + unrealizedPnl;
+            const posCount = positions.length;
             
-            const elBalance = document.getElementById('sim_balance');
-            const elUnrealized = document.getElementById('sim_unrealized_pnl');
-            const elWinRate = document.getElementById('sim_win_rate');
-            const elMaxDd = document.getElementById('sim_max_dd');
-            const elPosCount = document.getElementById('sim_positions_count');
+            // 更新统计数字
+            const elEquity = document.getElementById(prefix + '_equity');
+            const elBalance = document.getElementById(prefix + '_balance');
+            const elUnrealized = document.getElementById(prefix + '_unrealized');
+            const elWinRate = document.getElementById(prefix + '_win_rate');
+            const elMaxDd = document.getElementById(prefix + '_max_dd');
+            const elPosCount = document.getElementById(prefix + '_positions_count');
             
-            if (elBalance) elBalance.textContent = effectiveBalance.toFixed(2) + ' USDT';
+            if (elEquity) elEquity.textContent = effectiveBalance.toFixed(2) + ' USDT';
+            if (elBalance) elBalance.textContent = balance.toFixed(2) + ' USDT';
             if (elUnrealized) {
                 elUnrealized.textContent = (unrealizedPnl >= 0 ? '+' : '') + unrealizedPnl.toFixed(2);
                 elUnrealized.className = 'value ' + (unrealizedPnl >= 0 ? 'up' : 'down');
@@ -1289,25 +1349,24 @@
             if (elPosCount) elPosCount.textContent = posCount + '/' + maxPos;
             
             // 持仓表格
-            const wrap = document.getElementById('sim_positions_wrap');
+            const wrap = document.getElementById(prefix + '_positions_wrap');
             if (!wrap) return;
             
             if (positions.length === 0) {
-                wrap.innerHTML = '<div class="sim-empty">暂无持仓</div>';
+                if (fullRender) wrap.innerHTML = '<div class="sim-empty">暂无持仓</div>';
                 return;
             }
             
-            // 如果是秒级更新且表格已存在，只更新数值
+            // 秒级更新只更新数值
             const existingTable = wrap.querySelector('.sim-positions-table');
             if (!fullRender && existingTable) {
                 positions.forEach((pos, idx) => {
-                    const row = existingTable.querySelector(`[data-idx="${idx}"]`);
-                    const detailRow = existingTable.querySelector(`[data-detail-idx="${idx}"]`);
+                    const row = existingTable.querySelector(`[data-idx="${prefix}_${idx}"]`);
+                    const detailRow = existingTable.querySelector(`[data-detail-idx="${prefix}_${idx}"]`);
                     if (!row) return;
                     
                     const pnl = pos.unrealized_pnl || 0;
                     const current = pos.current_price || pos.entry_price || 0;
-                    
                     const pnlClass = pnl >= 0 ? 'pnl-up' : 'pnl-down';
                     
                     const tds = row.querySelectorAll('td');
@@ -1315,22 +1374,29 @@
                     if (tds[2]) tds[2].textContent = current.toFixed(6);
                     if (tds[3]) { tds[3].textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2); tds[3].className = pnlClass; }
                     
-                    // 同时更新折叠详情行里的状态
                     if (detailRow) {
                         const status = pos.status || '持仓中';
                         const statusColor = pos.status_color || 'hold';
                         const pnlPct = pos.unrealized_pnl_pct || 0;
-                        // 重新生成详情内容
+                        const sigDetail = pos.signal_detail || {};
+                        const detailHtml = Object.entries(sigDetail).map(([k,v]) => k + '=' + v).join(', ');
+                        const tpPrice = pos.tp_price || pos.take_profit_price || 0;
+                        const slPrice = pos.sl_price || pos.stop_loss_price || 0;
+                        const liqPrice = pos.liquidation_price || 0;
+                        const margin = pos.margin || 0;
+                        const leverage = pos.leverage || 1;
+                        const posValue = pos.position_value || 0;
+                        
                         detailRow.querySelector('td').innerHTML = `
                             <span class="detail-item"><span class="detail-label">盈亏%:</span> <span class="detail-value ${pnlPct >= 0 ? 'pnl-up' : 'pnl-down'}">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span></span>
-                            <span class="detail-item"><span class="detail-label">策略依据:</span> <span class="detail-value">${pos.signal_detail ? Object.entries(pos.signal_detail).map(([k,v]) => k + '=' + v).join(', ') : '-'}</span></span>
-                            <span class="detail-item"><span class="detail-label">保证金:</span> <span class="detail-value">${pos.margin || 0} USDT</span></span>
-                            <span class="detail-item"><span class="detail-label">杠杆:</span> <span class="detail-value">${pos.leverage || 1}x</span></span>
+                            <span class="detail-item"><span class="detail-label">策略依据:</span> <span class="detail-value">${detailHtml || '-'}</span></span>
+                            ${margin > 0 ? `<span class="detail-item"><span class="detail-label">保证金:</span> <span class="detail-value">${margin} USDT</span></span>` : ''}
+                            ${leverage > 1 ? `<span class="detail-item"><span class="detail-label">杠杆:</span> <span class="detail-value">${leverage}x</span></span>` : ''}
                             <span class="detail-item"><span class="detail-label">状态:</span> <span class="detail-value status-${statusColor}">${status}</span></span>
-                            <span class="detail-item"><span class="detail-label">止损:</span> <span class="detail-value">${(pos.stop_loss_price || 0).toFixed(6)}</span></span>
-                            <span class="detail-item"><span class="detail-label">止盈:</span> <span class="detail-value">${(pos.take_profit_price || 0).toFixed(6)}</span></span>
-                            <span class="detail-item"><span class="detail-label">爆仓:</span> <span class="detail-value">${(pos.liquidation_price || 0).toFixed(6)}</span></span>
-                            <span class="detail-item"><span class="detail-label">仓位价值:</span> <span class="detail-value">${(pos.position_value || 0).toFixed(2)} USDT</span></span>
+                            <span class="detail-item"><span class="detail-label">止损:</span> <span class="detail-value">${slPrice.toFixed(6)}</span></span>
+                            <span class="detail-item"><span class="detail-label">止盈:</span> <span class="detail-value">${tpPrice.toFixed(6)}</span></span>
+                            ${liqPrice > 0 ? `<span class="detail-item"><span class="detail-label">爆仓:</span> <span class="detail-value">${liqPrice.toFixed(6)}</span></span>` : ''}
+                            ${posValue > 0 ? `<span class="detail-item"><span class="detail-label">仓位价值:</span> <span class="detail-value">${posValue.toFixed(2)} USDT</span></span>` : ''}
                             <span class="detail-item"><span class="detail-label">开仓时间:</span> <span class="detail-value">${pos.entry_time ? new Date(pos.entry_time * 1000).toLocaleString('zh-CN') : '-'}</span></span>
                             <span class="detail-item"><span class="detail-label">数量:</span> <span class="detail-value">${(pos.quantity || 0).toFixed(4)}</span></span>
                         `;
@@ -1349,28 +1415,38 @@
                 const entry = pos.entry_price || 0;
                 const current = pos.current_price || entry;
                 const sig = pos.signal_type || '';
+                const toggleFn = prefix === 'spot' ? 'toggleSpotDetail' : 'toggleFuturesDetail';
+                
+                const sigDetail = pos.signal_detail || {};
+                const detailHtml = Object.entries(sigDetail).map(([k,v]) => k + '=' + v).join(', ');
+                const tpPrice = pos.tp_price || pos.take_profit_price || 0;
+                const slPrice = pos.sl_price || pos.stop_loss_price || 0;
+                const liqPrice = pos.liquidation_price || 0;
+                const margin = pos.margin || 0;
+                const leverage = pos.leverage || 1;
+                const posValue = pos.position_value || 0;
                 
                 return `
-                <tr data-idx="${idx}">
+                <tr data-idx="${prefix}_${idx}">
                     <td>
-                        <span class="sim-expand-btn" onclick="toggleSimDetail(${idx}, event)">▶</span>
+                        <span class="sim-expand-btn" onclick="${toggleFn}(${idx}, event)">▶</span>
                         <span class="sym">${pos.symbol}</span><br><span class="sig">${sig}</span>
                     </td>
                     <td>${entry.toFixed(6)}</td>
                     <td>${current.toFixed(6)}</td>
                     <td class="${pnlClass}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</td>
                 </tr>
-                <tr class="sim-detail-row" data-detail-idx="${idx}">
+                <tr class="sim-detail-row" data-detail-idx="${prefix}_${idx}">
                     <td colspan="4">
                         <span class="detail-item"><span class="detail-label">盈亏%:</span> <span class="detail-value ${pnlClass}">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span></span>
-                        <span class="detail-item"><span class="detail-label">策略依据:</span> <span class="detail-value">${pos.signal_detail ? Object.entries(pos.signal_detail).map(([k,v]) => k + '=' + v).join(', ') : '-'}</span></span>
-                        <span class="detail-item"><span class="detail-label">保证金:</span> <span class="detail-value">${pos.margin || 0} USDT</span></span>
-                        <span class="detail-item"><span class="detail-label">杠杆:</span> <span class="detail-value">${pos.leverage || 1}x</span></span>
+                        <span class="detail-item"><span class="detail-label">策略依据:</span> <span class="detail-value">${detailHtml || '-'}</span></span>
+                        ${margin > 0 ? `<span class="detail-item"><span class="detail-label">保证金:</span> <span class="detail-value">${margin} USDT</span></span>` : ''}
+                        ${leverage > 1 ? `<span class="detail-item"><span class="detail-label">杠杆:</span> <span class="detail-value">${leverage}x</span></span>` : ''}
                         <span class="detail-item"><span class="detail-label">状态:</span> <span class="detail-value ${statusClass}">${status}</span></span>
-                        <span class="detail-item"><span class="detail-label">止损:</span> <span class="detail-value">${(pos.stop_loss_price || 0).toFixed(6)}</span></span>
-                        <span class="detail-item"><span class="detail-label">止盈:</span> <span class="detail-value">${(pos.take_profit_price || 0).toFixed(6)}</span></span>
-                        <span class="detail-item"><span class="detail-label">爆仓:</span> <span class="detail-value">${(pos.liquidation_price || 0).toFixed(6)}</span></span>
-                        <span class="detail-item"><span class="detail-label">仓位价值:</span> <span class="detail-value">${(pos.position_value || 0).toFixed(2)} USDT</span></span>
+                        <span class="detail-item"><span class="detail-label">止损:</span> <span class="detail-value">${slPrice.toFixed(6)}</span></span>
+                        <span class="detail-item"><span class="detail-label">止盈:</span> <span class="detail-value">${tpPrice.toFixed(6)}</span></span>
+                        ${liqPrice > 0 ? `<span class="detail-item"><span class="detail-label">爆仓:</span> <span class="detail-value">${liqPrice.toFixed(6)}</span></span>` : ''}
+                        ${posValue > 0 ? `<span class="detail-item"><span class="detail-label">仓位价值:</span> <span class="detail-value">${posValue.toFixed(2)} USDT</span></span>` : ''}
                         <span class="detail-item"><span class="detail-label">开仓时间:</span> <span class="detail-value">${pos.entry_time ? new Date(pos.entry_time * 1000).toLocaleString('zh-CN') : '-'}</span></span>
                         <span class="detail-item"><span class="detail-label">数量:</span> <span class="detail-value">${(pos.quantity || 0).toFixed(4)}</span></span>
                     </td>
@@ -1390,10 +1466,10 @@
                     <tbody>${rows}</tbody>
                 </table>
             `;
-            // 恢复用户展开的详情行状态
-            expandedSimDetails.forEach(idx => {
-                const detailRow = wrap.querySelector(`[data-detail-idx="${idx}"]`);
-                const btn = wrap.querySelector(`[data-idx="${idx}"] .sim-expand-btn`);
+            // 恢复展开的详情行
+            expandedSet.forEach(idx => {
+                const detailRow = wrap.querySelector(`[data-detail-idx="${prefix}_${idx}"]`);
+                const btn = wrap.querySelector(`[data-idx="${prefix}_${idx}"] .sim-expand-btn`);
                 if (detailRow) {
                     detailRow.classList.add('show');
                     if (btn) btn.textContent = '▼';
@@ -1401,23 +1477,66 @@
             });
         }
 
-        // 记录用户展开的详情行索引，避免重新渲染时自动收起
-        const expandedSimDetails = new Set();
+        // 渲染V7双账户面板
+        function renderSimTrade(state, fullRender = true) {
+            simTradeCache = state;
+            const summary = state.summary || {};
+            
+            // 检测是否是旧格式（单账户）
+            const isOldFormat = (state.account !== undefined && state.positions !== undefined && !state.spot_account);
+            
+            if (isOldFormat) {
+                // 旧格式：全部渲染到合约面板，现货面板显示兼容提示
+                renderAccountPanel(state.account, state.positions, 'futures', summary.max_positions || 5, expandedFuturesDetails, fullRender);
+                const spotWrap = document.getElementById('spot_positions_wrap');
+                if (spotWrap && fullRender) spotWrap.innerHTML = '<div class="sim-empty">兼容模式：数据在合约账户中</div>';
+                return;
+            }
+            
+            // V7新格式：双账户独立渲染
+            renderAccountPanel(state.spot_account, state.spot_positions || [], 'spot', 20, expandedSpotDetails, fullRender);
+            renderAccountPanel(state.futures_account, state.futures_positions || [], 'futures', 20, expandedFuturesDetails, fullRender);
+        }
 
-        // 折叠/展开持仓详情
-        window.toggleSimDetail = function(idx, event) {
+        // 记录用户展开的详情行索引
+        const expandedSpotDetails = new Set();
+        const expandedFuturesDetails = new Set();
+
+        // 折叠/展开持仓详情 - 现货
+        window.toggleSpotDetail = function(idx, event) {
             if (event) event.stopPropagation();
-            const detailRow = document.querySelector(`[data-detail-idx="${idx}"]`);
-            const btn = document.querySelector(`[data-idx="${idx}"] .sim-expand-btn`);
+            const wrap = document.getElementById('spot_positions_wrap');
+            if (!wrap) return;
+            const detailRow = wrap.querySelector(`[data-detail-idx="spot_${idx}"]`);
+            const btn = wrap.querySelector(`[data-idx="spot_${idx}"] .sim-expand-btn`);
             if (!detailRow) return;
             if (detailRow.classList.contains('show')) {
                 detailRow.classList.remove('show');
                 if (btn) btn.textContent = '▶';
-                expandedSimDetails.delete(idx);
+                expandedSpotDetails.delete(idx);
             } else {
                 detailRow.classList.add('show');
                 if (btn) btn.textContent = '▼';
-                expandedSimDetails.add(idx);
+                expandedSpotDetails.add(idx);
+            }
+        };
+
+        // 折叠/展开持仓详情 - 合约
+        window.toggleFuturesDetail = function(idx, event) {
+            if (event) event.stopPropagation();
+            const wrap = document.getElementById('futures_positions_wrap');
+            if (!wrap) return;
+            const detailRow = wrap.querySelector(`[data-detail-idx="futures_${idx}"]`);
+            const btn = wrap.querySelector(`[data-idx="futures_${idx}"] .sim-expand-btn`);
+            if (!detailRow) return;
+            if (detailRow.classList.contains('show')) {
+                detailRow.classList.remove('show');
+                if (btn) btn.textContent = '▶';
+                expandedFuturesDetails.delete(idx);
+            } else {
+                detailRow.classList.add('show');
+                if (btn) btn.textContent = '▼';
+                expandedFuturesDetails.add(idx);
             }
         };
 

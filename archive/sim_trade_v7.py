@@ -28,11 +28,11 @@ SPOT_PER_TRADE = 5                  # 每单金额 USDT
 SPOT_MAX_POSITIONS = 20             # 最大持仓币种数
 SPOT_FEE = 0.001                    # 手续费 0.1%
 SPOT_TP_MULTIPLIER = 2.0            # 止盈: 2倍买入价
-SPOT_GAIN_FILTER_PCT = 15.0         # BB日涨幅限制 (%)
+SPOT_GAIN_FILTER_PCT = 10.0         # 日涨幅限制 (%)
 SPOT_VOL_FILTER = 1_000_000         # 24h最低成交量
-SPOT_BB_PERIOD = 20                 # 布林带周期(日线)
+SPOT_BB_PERIOD = 30                 # 布林带周期
 SPOT_BB_STD_MULT = 2.5              # 标准差倍数
-SPOT_MIN_HOURS = 4                  # BB最小连续天数
+SPOT_MIN_HOURS = 4                  # 量surge最小持续小时数
 SPOT_HL_WINDOW = 5                  # 高低点窗口（天）
 SPOT_HL_MIN = 3                     # 窗口内最少高低点个数
 
@@ -44,17 +44,14 @@ FUT_LEVERAGE = 10                   # 杠杆倍数
 FUT_TP_PCT = 50                     # 止盈比例 (%)
 FUT_SL_PCT = 0.02                   # 止损比例 2%
 FUT_VOL_FILTER = 1_000_000          # 24h最低成交量
-FUT_MIN_RATIO = 1.0                 # 量surge最小倍数
-FUT_MIN_GAIN_PCT = 2.3              # 15m涨幅最小阈值%（网站端已过滤，此处为防御）
+FUT_MIN_RATIO = 4.0                 # 量surge最小倍数
 FUT_MAX_DAILY_TP = 4                # 日最大止盈次数
-SPOT_EXHAUSTED_THRESHOLD = 15       # VS止盈N次后标记BB耗尽
 
 # --- 其他配置 ---
 HOST = os.environ.get('MARKET_HOST', 'http://localhost:5003')
 API_TIMEOUT = 10
 
 EXCLUDE_SYMBOLS = {
-    # 大盘/股票/商品
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT',
     'TSLAUSDT', 'NVDAUSDT', 'AMZNUSDT', 'GOOGLUSDT', 'AAPLUSDT',
     'COINUSDT', 'MSTRUSDT', 'METAUSDT', 'TSMUSDT',
@@ -62,40 +59,8 @@ EXCLUDE_SYMBOLS = {
     # 稳定币对
     'USDCUSDT', 'RLUSDUSDT', 'UUSDT', 'XUSDUSDT', 'USD1USDT',
     'FDUSDUSDT', 'TUSDUSDT', 'PAXUSDT', 'BUSDUSDT', 'SUSDUSDT',
-    'USDEUSDT', 'USDPUSDT', 'USDSUSDT', 'AEURUSDT', 'EURIUSDT', 'EURUSDT',
-    'BFUSDUSDT',
-    # 现货专属（期货无此交易对，对齐回测数据）
-    'ACMUSDT', 'ADXUSDT', 'ALCXUSDT', 'AMPUSDT', 'ARDRUSDT',
-    'ATMUSDT', 'AUDIOUSDT', 'BARUSDT', 'BNSOLUSDT',
-    'BTTCUSDT', 'CITYUSDT', 'DCRUSDT', 'DGBUSDT', 'DODOUSDT',
-    'FARMUSDT', 'FTTUSDT', 'GLMRUSDT', 'GNOUSDT', 'GNSUSDT',
-    'IQUSDT', 'JUVUSDT', 'KGSTUSDT', 'LAZIOUSDT', 'LUNAUSDT',
-    'MBLUSDT', 'NEXOUSDT', 'OSMOUSDT', 'PIVXUSDT', 'PONDUSDT',
-    'PORTOUSDT', 'PSGUSDT', 'PYRUSDT', 'QIUSDT', 'QKCUSDT',
-    'QUICKUSDT', 'RADUSDT', 'REQUSDT', 'SCUSDT', 'STRAXUSDT',
-    'TFUELUSDT', 'TKOUSDT', 'WBETHUSDT', 'WBTCUSDT', 'WINUSDT',
-    'XNOUSDT',
+    'USDEUSDT',
 }
-
-# Spot → Futures symbol映射（合约与现货名称不一致的币种）
-SPOT_TO_FUTURES = {
-    'RAYUSDT':   'RAYSOLUSDT',
-    'BONKUSDT':  '1000BONKUSDT',
-    'FLOKIUSDT': '1000FLOKIUSDT',
-    'PEPEUSDT':  '1000PEPEUSDT',
-    'SHIBUSDT':  '1000SHIBUSDT',
-    'LUNCUSDT':  '1000LUNCUSDT',
-    'XECUSDT':   '1000XECUSDT',
-}
-FUTURES_TO_SPOT = {v: k for k, v in SPOT_TO_FUTURES.items()}
-
-def spot_to_futures_symbol(spot_symbol: str) -> str:
-    """现货symbol → 合约symbol"""
-    return SPOT_TO_FUTURES.get(spot_symbol, spot_symbol)
-
-def futures_to_spot_symbol(futures_symbol: str) -> str:
-    """合约symbol → 现货symbol"""
-    return FUTURES_TO_SPOT.get(futures_symbol, futures_symbol)
 
 # ========== 全局状态 ==========
 
@@ -133,8 +98,6 @@ spot_entry_ts = {}  # {symbol: entry_timestamp} 记录每个币种的现货入�
 # 过滤/冷却状态
 daily_take_profit_count = {}  # {(symbol, date_str): count} 合约日止盈计数
 cooldown_symbols = {}  # {symbol: cooldown_end_timestamp} 止损后冷却
-tp_per_symbol = {}  # {symbol: count} VS止盈总次数（用于耗尽检测）
-exhausted_symbols = set()  # VS止盈>=5次已耗尽的币种
 
 # 交易日志
 spot_trade_log = []
@@ -180,44 +143,6 @@ def get_24h_volume(symbol: str) -> float:
 def get_beijing_date_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-def fut_pos_price_symbol(pos: dict) -> str:
-    """合约持仓查价用symbol（自动用现货名查spot API）"""
-    return pos.get("spot_symbol", pos["symbol"])
-
-def close_futures_position_forced(pos: dict, reason: str) -> float:
-    """强制平合约仓位（不检查TP/SL），返回平仓价"""
-    global futures_positions, futures_account
-    symbol = pos["symbol"]
-    spot_sym = fut_pos_price_symbol(pos)
-    current_price = get_current_price(spot_sym)
-    if current_price <= 0:
-        current_price = pos["entry_price"]
-    pnl = (current_price - pos["entry_price"]) * pos["quantity"]
-    fee = pos["position_value"] * 0.0004 * 2
-    net_pnl = pnl - fee
-    futures_account["balance"] += net_pnl
-    futures_account["total_pnl"] += net_pnl
-    futures_account["total_trades"] += 1
-    if net_pnl > 0:
-        futures_account["win_trades"] += 1
-    else:
-        futures_account["loss_trades"] += 1
-    log = {
-        "time": datetime.now().isoformat(),
-        "action": "CLOSE",
-        "symbol": symbol,
-        "signal_type": pos.get("signal_type", ""),
-        "entry_price": pos["entry_price"],
-        "close_price": current_price,
-        "pnl": net_pnl,
-        "reason": reason,
-    }
-    futures_trade_log.append(log)
-    futures_positions.remove(pos)
-    save_state()
-    print(f"[合约平仓] {symbol} @ {format_price(current_price)} | {reason} | PnL: {net_pnl:.4f} USDT")
-    return current_price
-
 def is_in_cooldown(symbol: str) -> bool:
     return time.time() < cooldown_symbols.get(symbol, 0)
 
@@ -238,12 +163,6 @@ def record_take_profit(symbol: str):
     daily_take_profit_count[key] = daily_take_profit_count.get(key, 0) + 1
     count = daily_take_profit_count[key]
     print(f"[合约日止盈] {symbol} 当日止盈 {count}/{FUT_MAX_DAILY_TP} 次")
-
-    # 耗尽检测：VS止盈累计>=5次 → 标记现货耗尽
-    tp_per_symbol[symbol] = tp_per_symbol.get(symbol, 0) + 1
-    if tp_per_symbol[symbol] >= SPOT_EXHAUSTED_THRESHOLD and symbol not in exhausted_symbols:
-        exhausted_symbols.add(symbol)
-        print(f"[耗尽] {symbol} VS已止盈{tp_per_symbol[symbol]}次，标记为耗尽，不再开合约")
 
 def format_price(price: float) -> str:
     if price <= 0:
@@ -318,7 +237,7 @@ def calculate_pnl(entry_price: float, current_price: float, quantity: float) -> 
 # ========== 现货策略 ==========
 
 def get_bb_climb_signals() -> list:
-    data = api_get("/api/bollinger_climb_daily")
+    data = api_get("/api/bollinger_climb")
     signals = data.get("data", [])
     updated_at = data.get("updated_at", 0)
     now = time.time()
@@ -488,8 +407,8 @@ def evaluate_spot_signals():
     
     for sig in signals:
         symbol = sig.get("symbol", "")
-
-        if symbol in EXCLUDE_SYMBOLS or symbol in exhausted_symbols:
+        
+        if symbol in EXCLUDE_SYMBOLS:
             continue
         if get_spot_position(symbol):
             continue
@@ -497,20 +416,20 @@ def evaluate_spot_signals():
             break
         if spot_account["balance"] < SPOT_PER_TRADE:
             break
-
+        
         consecutive = sig.get("consecutive_hours", 0)
         if consecutive < SPOT_MIN_HOURS:
             continue
-
+        
         # 成交量过滤
         vol_24h = get_24h_volume(symbol)
         if vol_24h < SPOT_VOL_FILTER:
             continue
-
+        
         entry_price = get_current_price(symbol)
         if entry_price <= 0:
             continue
-
+        
         signal_detail = {
             "连续小时": consecutive,
             "24h成交额(亿)": round(vol_24h / 1e8, 2),
@@ -526,10 +445,8 @@ def get_vol_surge_signals() -> list:
     return [s for s in signals if s.get("ratio", 0) >= FUT_MIN_RATIO and now - s.get("start_time", 0) < 300]
 
 def get_futures_position(symbol: str):
-    """查找合约持仓（支持现货symbol名自动映射）"""
-    fut_symbol = spot_to_futures_symbol(symbol)
     for p in futures_positions:
-        if p["symbol"] == fut_symbol or p["symbol"] == symbol:
+        if p["symbol"] == symbol:
             return p
     return None
 
@@ -540,64 +457,64 @@ def get_futures_available_balance():
     used = sum(p["margin"] for p in futures_positions)
     return futures_account["balance"] - used
 
-def open_futures_position(symbol: str, signal_type: str, entry_price: float,
+def open_futures_position(symbol: str, signal_type: str, entry_price: float, 
                          signal_detail: dict = None):
-    """开合约仓位（symbol为现货名，内部自动映射为合约名）"""
+    """开合约仓位"""
     global futures_positions, futures_account
-
+    
     if symbol in EXCLUDE_SYMBOLS:
         return False
-
+    
     if get_futures_position(symbol):
         return False
-
+    
     if is_in_cooldown(symbol):
         return False
-
+    
     if get_futures_positions_count() >= FUT_MAX_POSITIONS:
         return False
-
+    
     available = get_futures_available_balance()
     if available < FUT_MARGIN:
         return False
-
+    
     # 【V7核心约束】必须在现货持仓中
     if not get_spot_position(symbol):
         return False
-
-    # 【V7核心约束】必须在现货持仓中（时序检查已在evaluate_futures_signals中完成）
-    if symbol not in spot_entry_ts:
+    
+    # 【V7核心约束】信号时间必须在现货入场之后
+    if symbol in spot_entry_ts:
+        # 实时场景中，如果信号出现且已有现货持仓，默认满足条件
+        pass
+    else:
         return False
-
+    
     # 日止盈过滤
     if not check_daily_tp_filter(symbol):
         return False
-
+    
     # 涨幅过滤
     passed, _ = check_daily_gain_filter(symbol, SPOT_GAIN_FILTER_PCT)
     if not passed:
         return False
-
+    
     # 量surge过滤: 检查最近3根1h K线是否有2根收阴
     if check_recent_1h_bearish(symbol):
         return False
-
-    # 映射为合约symbol名
-    fut_symbol = spot_to_futures_symbol(symbol)
-
+    
     margin = FUT_MARGIN
     leverage = FUT_LEVERAGE
     position_value = margin * leverage
     quantity = position_value / entry_price
-
+    
     # 止盈价
     tp_price = entry_price * (1 + FUT_TP_PCT / 100 / leverage)
     # 止损价: 开仓价 * (1 - 2%)
     sl_price = entry_price * (1 - FUT_SL_PCT)
-
+    
     pos = {
-        "symbol": fut_symbol,
-        "spot_symbol": symbol,
+        "symbol": symbol,
+        "signal_type": signal_type,
         "signal_detail": signal_detail or {},
         "entry_price": entry_price,
         "quantity": quantity,
@@ -691,11 +608,10 @@ def check_futures_positions():
     """检查合约持仓的TP/SL"""
     positions_to_close = []
     total_unrealized = 0
-
+    
     for pos in futures_positions:
-        # 用现货symbol查价格（spot API），合约symbol用于记录
-        spot_sym = pos.get("spot_symbol", pos["symbol"])
-        current_price = get_current_price(spot_sym)
+        symbol = pos["symbol"]
+        current_price = get_current_price(symbol)
         
         if current_price <= 0:
             continue
@@ -722,8 +638,7 @@ def check_futures_positions():
         print(f"\n💥 合约联合爆仓！总权益归零: {total_equity:.2f} USDT")
         for pos in futures_positions:
             symbol = pos["symbol"]
-            spot_sym = fut_pos_price_symbol(pos)
-            current_price = get_current_price(spot_sym)
+            current_price = get_current_price(symbol)
             if current_price <= 0:
                 current_price = pos["entry_price"] * 0.5
             pnl = calculate_pnl(pos["entry_price"], current_price, pos["quantity"])
@@ -762,17 +677,14 @@ def evaluate_futures_signals():
     available = get_futures_available_balance()
     if available < FUT_MARGIN:
         return
-
+    
     signals = get_vol_surge_signals()
-
+    
     # 按24h成交量降序
     signals_with_vol = []
-    has_high_ratio = False  # 是否存在 ratio >= 5.0 的信号（触发满仓替换）
     for sig in signals:
         symbol = sig.get("symbol", "")
         if symbol in EXCLUDE_SYMBOLS or get_futures_position(symbol):
-            continue
-        if symbol in exhausted_symbols:
             continue
         ratio = sig.get("ratio", 0)
         if ratio < FUT_MIN_RATIO:
@@ -782,61 +694,23 @@ def evaluate_futures_signals():
             continue
         sig["_vol_24h"] = vol_24h
         signals_with_vol.append(sig)
-        if ratio >= 5.0:
-            has_high_ratio = True
-
+    
     signals_with_vol.sort(key=lambda s: s.get("_vol_24h", 0), reverse=True)
-
-    # 满仓替换：当满仓且有 ratio >= 5.0 的高倍信号时，替换最弱的非VS仓位
-    if get_futures_positions_count() >= 5 and has_high_ratio:
-        # 找出最弱的非VS仓位（unrealized pnl 最高的，即"最不亏"）
-        non_vs_positions = []
-        for i, pos in enumerate(futures_positions):
-            if not pos.get("signal_type", "").startswith("VOL_SURGE_"):
-                entry_price = pos["entry_price"]
-                spot_sym = fut_pos_price_symbol(pos)
-                current_price = get_current_price(spot_sym)
-                if current_price <= 0:
-                    continue
-                pnl = (current_price - entry_price) * pos["quantity"]
-                non_vs_positions.append((i, pnl, pos))
-
-        if non_vs_positions:
-            non_vs_positions.sort(key=lambda x: x[1], reverse=True)
-            replace_idx, _, replace_pos = non_vs_positions[0]
-            # 找最高 ratio 的 VS 信号
-            high_sigs = [s for s in signals_with_vol if s.get("ratio", 0) >= 5.0]
-            if high_sigs:
-                best = max(high_sigs, key=lambda s: s.get("ratio", 0))
-                old_symbol = replace_pos["symbol"]
-                entry_price = close_futures_position_forced(replace_pos, "REPLACE_VOL_SURGE")
-                print(f"[满仓替换] {old_symbol} → {best['symbol']} (ratio={best['ratio']:.1f}x)")
-                # 移除被替换的，为新信号腾空间
-                signals_with_vol = [s for s in signals_with_vol if s["symbol"] != best["symbol"]]
-                signals_with_vol.insert(0, best)
-
+    
     for sig in signals_with_vol:
         if get_futures_positions_count() >= FUT_MAX_POSITIONS:
             break
         if get_futures_available_balance() < FUT_MARGIN:
             break
-
+        
         symbol = sig.get("symbol", "")
         ratio = sig.get("ratio", 0)
         vol_24h = sig.get("_vol_24h", 0)
-
-        # VS信号必须在现货入场之后（与回测一致）
-        if symbol in spot_entry_ts:
-            sig_start = sig.get("start_time", 0)
-            if sig_start <= spot_entry_ts[symbol]:
-                continue
-        else:
-            continue
-
+        
         entry_price = get_current_price(symbol)
         if entry_price <= 0:
             continue
-
+        
         signal_type = f"VOL_SURGE_{ratio:.1f}x"
         signal_detail = {"突增倍数": round(ratio, 2), "24h成交额(亿)": round(vol_24h / 1e8, 2)}
         open_futures_position(symbol, signal_type, entry_price, signal_detail)
@@ -854,8 +728,6 @@ def save_state():
         "spot_entry_ts": spot_entry_ts,
         "daily_take_profit_count": {f"{k[0]}#{k[1]}": v for k, v in daily_take_profit_count.items()},
         "cooldown_symbols": cooldown_symbols,
-        "tp_per_symbol": tp_per_symbol,
-        "exhausted_symbols": list(exhausted_symbols),
         "spot_trade_log": spot_trade_log[-50:],
         "futures_trade_log": futures_trade_log[-50:],
         "saved_at": datetime.now().isoformat(),
@@ -874,7 +746,6 @@ def save_state():
 def load_state():
     global spot_account, spot_positions, futures_account, futures_positions
     global spot_entry_ts, daily_take_profit_count, cooldown_symbols
-    global tp_per_symbol, exhausted_symbols
     
     if not os.path.exists(SIM_TRADE_STATE_FILE):
         return
@@ -898,11 +769,7 @@ def load_state():
                 daily_take_profit_count[(parts[0], parts[1])] = v
         
         cooldown_symbols.update(state.get("cooldown_symbols", {}))
-        tp_per_symbol.update(state.get("tp_per_symbol", {}))
-        exhausted_symbols.update(state.get("exhausted_symbols", []))
-        if exhausted_symbols:
-            print(f"[状态恢复] 已耗尽币种: {len(exhausted_symbols)} 个 - {','.join(list(exhausted_symbols)[:5])}")
-
+        
         print(f"[状态恢复] 现货持仓: {len(spot_positions)} | 合约持仓: {len(futures_positions)}")
     except Exception as e:
         print(f"[状态恢复失败] {e}")
@@ -921,8 +788,7 @@ def print_status():
     # 合约
     fut_unrealized = 0
     for pos in futures_positions:
-        spot_sym = fut_pos_price_symbol(pos)
-        current = get_current_price(spot_sym)
+        current = get_current_price(pos["symbol"])
         if current > 0:
             fut_unrealized += calculate_pnl(pos["entry_price"], current, pos["quantity"])
     fut_equity = futures_account["balance"] + fut_unrealized
@@ -945,8 +811,7 @@ def print_status():
     if futures_positions:
         print(f"\n合约持仓:")
         for pos in futures_positions:
-            spot_sym = fut_pos_price_symbol(pos)
-            current = get_current_price(spot_sym)
+            current = get_current_price(pos["symbol"])
             pnl_pct = ((current - pos["entry_price"]) / pos["entry_price"] * 100) if current > 0 else 0
             status = "✓止盈" if current >= pos["tp_price"] else ("✗止损" if current <= pos["sl_price"] else "持仓中")
             print(f"  {pos['symbol']:<14} 入:{format_price(pos['entry_price']):<12} 现:{format_price(current):<12} {pnl_pct:>+7.2f}% {status} | {pos['signal_type']}")
@@ -972,18 +837,6 @@ def main():
         try:
             now = time.time()
             
-            # 全部现货耗尽 → 全平现货
-            if spot_positions and exhausted_symbols and all(
-                p["symbol"] in exhausted_symbols for p in spot_positions
-            ):
-                print("[全部耗尽] 所有现货持仓均已耗尽，全平现货")
-                for pos in list(spot_positions):
-                    price = get_current_price(pos["symbol"])
-                    if price <= 0:
-                        price = pos["entry_price"]
-                    pnl = (price - pos["entry_price"]) * pos["quantity"]
-                    close_spot_position(pos, "ALL_EXHAUSTED", price, pnl)
-
             # 检查并平仓
             if spot_positions:
                 check_spot_positions()
