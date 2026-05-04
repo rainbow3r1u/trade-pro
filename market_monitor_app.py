@@ -1194,8 +1194,11 @@ def _detect_bollinger_climb(symbol: str, hourly_klines: list) -> dict | None:
     # 计算ATR（全量滑动）
     atr = _calculate_atr(hourly_klines, cfg["atr_period"]) if cfg["atr_enabled"] else None
     
-    # 计算24小时平均成交量（含最后一根，用于相对比较）
-    avg_volumes = [k.get("q", 0) for k in hourly_klines[-24:]] if len(hourly_klines) >= 24 else [k.get("q", 0) for k in hourly_klines]
+    # 计算前5个已完成日线的平均成交量（不含今天未完成）
+    if len(hourly_klines) >= 6:
+        avg_volumes = [k.get("q", 0) for k in hourly_klines[-6:-1]]
+    else:
+        avg_volumes = [k.get("q", 0) for k in hourly_klines[:-1]] if len(hourly_klines) > 1 else [0]
     avg_vol = sum(avg_volumes) / len(avg_volumes) if avg_volumes else 0
     
     # 检查最后一根K线（不含量能，量能放最后一步）
@@ -1228,10 +1231,25 @@ def _detect_bollinger_climb(symbol: str, hourly_klines: list) -> dict | None:
             break
         consecutive_count += 1
 
-    # 量能检查放最后一步（仅对最新K线）
-    if avg_vol > 0 and last_k.get("q", 0) < avg_vol * cfg["volume_ratio"]:
-        return None
-    
+    # 10. 现货/合约日线阴阳一致性
+    with _daily_kline_lock_futures:
+        fut_kl = _daily_kline_cache_futures.get(symbol, [])
+    if fut_kl:
+        fut_last = fut_kl[-1]
+        spot_dir = last_k["c"] - last_k["o"]
+        fut_dir = fut_last["c"] - fut_last["o"]
+        if (spot_dir > 0) != (fut_dir > 0):
+            return None  # 现货合约阴阳不一致
+
+    # 11. 量能检查放最后一步（仅对最新K线）
+    # 宽松条件：量>0.3x5日均 且 阳线 → 行情启动初期放过
+    # 严格条件：量>1.2x5日均 → 放量确认
+    q_today = last_k.get("q", 0)
+    is_bullish = last_k["c"] > last_k["o"]
+    if avg_vol > 0:
+        if q_today < avg_vol * cfg["volume_ratio"] and not (q_today > avg_vol * 0.3 and is_bullish):
+            return None
+
     # 只取最后consecutive_count根K线
     valid_hours = hourly_klines[-consecutive_count:]
     
@@ -1288,7 +1306,7 @@ def _diagnose_bb(symbol: str, klines: list, cfg: dict) -> tuple:
     atr = _calculate_atr(klines, cfg["atr_period"]) if cfg["atr_enabled"] else None
 
     # 4. avg volume
-    avg_volumes = [k.get("q", 0) for k in klines[-24:]] if len(klines) >= 24 else [k.get("q", 0) for k in klines]
+    avg_volumes = [k.get("q", 0) for k in klines[-6:-1]] if len(klines) >= 6 else [k.get("q", 0) for k in klines[:-1]] if len(klines) > 1 else [0]
     avg_vol = sum(avg_volumes) / len(avg_volumes) if avg_volumes else 0
 
     detail = {
@@ -1296,7 +1314,7 @@ def _diagnose_bb(symbol: str, klines: list, cfg: dict) -> tuple:
         "upper": round(upper, 8),
         "close": round(last_k["c"], 8),
         "q": round(last_k.get("q", 0), 0),
-        "avg_vol_24": round(avg_vol, 0),
+        "avg_vol_5d": round(avg_vol, 0),
         "atr": round(atr, 6) if atr else 0,
         "range": round(last_k["h"] - last_k["l"], 8),
     }
@@ -1343,10 +1361,76 @@ def _diagnose_bb(symbol: str, klines: list, cfg: dict) -> tuple:
     if consecutive_count < 4:
         return None, "consecutive_short", {**detail, "consecutive": consecutive_count}
 
-    # 10. 量能（最后一步，仅检查最新K线）
-    if avg_vol > 0 and last_k.get("q", 0) < avg_vol * cfg["volume_ratio"]:
-        detail["vol_ratio"] = round(last_k.get("q", 0) / avg_vol, 2) if avg_vol > 0 else 0
-        return None, "vol_low", detail
+    # 10. 现货/合约日线阴阳一致性
+    fut_sym = symbol
+    with _daily_kline_lock_futures:
+        fut_kl = _daily_kline_cache_futures.get(fut_sym, [])
+    if fut_kl:
+        fut_last = fut_kl[-1]
+        spot_dir = last_k["c"] - last_k["o"]  # 现货方向
+        fut_dir = fut_last["c"] - fut_last["o"]  # 合约方向
+        if (spot_dir > 0) != (fut_dir > 0):
+            detail["spot_dir"] = round(spot_dir, 6)
+            detail["fut_dir"] = round(fut_dir, 6)
+            return None, "spot_fut_mismatch", detail
+    # 无合约数据时默认通过（非所有币种都有合约交易对）
+
+    # 11. 量能检查
+    #   严格：量 > 1.2x5日均 → 直接通过
+    #   宽松：量 > 0.3x5日均 → 进入⑫方向检测
+    #   不足：量 < 0.3x → 淘汰
+    passed_relaxed = False
+    if avg_vol > 0:
+        q_today = last_k.get("q", 0)
+        vol_ratio = q_today / avg_vol
+        detail["vol_ratio"] = round(vol_ratio, 2)
+        if vol_ratio >= cfg["volume_ratio"]:
+            pass  # 严格，直接过
+        elif vol_ratio > 0.3:
+            passed_relaxed = True  # 宽松，交给⑫
+        else:
+            return None, "vol_low", detail
+
+    # 12. 复活赛入口（仅宽松通过的进入）
+    #   收阴 → 加入复活赛队列，BB信号死
+    #   复活赛不看①~⑪，只等反包
+    if passed_relaxed and len(klines) >= 3:
+        cmpl = klines[-2]        # 最近完工日线 (如05-05)
+        cmpl_prev = klines[-3]   # 再前一根 (如05-04)
+
+        prev_bear = (cmpl_prev["c"] < cmpl_prev["o"])
+
+        if prev_bear and cmpl["c"] >= cmpl["o"]:
+            # 前日阴 + 昨日阳 → 复活赛：查反包
+            engulfing = (cmpl["o"] <= cmpl_prev["c"] and cmpl["c"] >= cmpl_prev["o"])
+            if engulfing:
+                detail["engulfing"] = True
+                detail["prev_close"] = round(cmpl_prev["c"], 6)
+                detail["prev_open"] = round(cmpl_prev["o"], 6)
+            else:
+                return None, "close_bearish_revoked", detail
+        elif prev_bear:
+            # 前日阴+昨日也阴 → 复用昨日阴线入队等反包
+            with _resurrection_lock:
+                _resurrection_queue[symbol] = {
+                    "bearish_ts": cmpl["t"],
+                    "bearish_o": cmpl["o"],
+                    "bearish_c": cmpl["c"],
+                }
+            return None, "close_bearish_revoked", detail
+        elif cmpl["c"] < cmpl["o"]:
+            # 最近完工收阴 → 存入复活赛队列
+            with _resurrection_lock:
+                _resurrection_queue[symbol] = {
+                    "bearish_ts": cmpl["t"],
+                    "bearish_o": cmpl["o"],
+                    "bearish_c": cmpl["c"],
+                }
+            return None, "close_bearish_revoked", detail
+        # else: 两根都阳 → 正常，但今天必须阳线
+        elif last_k["c"] <= last_k["o"]:
+            return None, "close_bearish_revoked", detail
+        # 今天阳线 → 通过
 
     # PASSED
     signal = {
@@ -1363,6 +1447,135 @@ def _diagnose_bb(symbol: str, klines: list, cfg: dict) -> tuple:
         } for h in klines[-consecutive_count:]],
     }
     return signal, "passed", detail
+
+
+def _detect_cc(symbol: str, klines: list, cfg: dict) -> dict | None:
+    """CC爆发检测: 连续大阳线+放量+价格在上轨附近/上方。
+    抓BB爬坡漏掉的火箭发射型币种（如TAGUSDT）。
+
+    条件:
+      - 连续>=3天阳线
+      - 其中>=2天涨幅>=15%
+      - 价格在上轨95%以上
+      - HL爬升通过
+      - 量能不低于5日均的50%
+    """
+    if symbol in cfg.get("exclude_symbols", set()):
+        return None
+    if len(klines) < cfg["period"] + 2:
+        return None
+
+    closes = [k["c"] for k in klines]
+    mids, uppers = _compute_rolling_bb(closes, cfg["period"], cfg["std_mult"])
+    if not uppers:
+        return None
+
+    n = len(klines)
+    bi = n - 1 - cfg["period"] + 1
+    if bi < 0 or bi >= len(uppers):
+        return None
+
+    upper = uppers[bi]
+    today = klines[-1]
+
+    if today["c"] <= today["o"]:
+        return None
+    if today["c"] <= upper * 0.95:
+        return None
+
+    consec = 0
+    big_days = 0
+    valid_hours = []
+    for i in range(n - 1, -1, -1):
+        k = klines[i]
+        if k["c"] <= k["o"]:
+            break
+        gain = (k["c"] - k["o"]) / k["o"] * 100
+        bi_k = i - cfg["period"] + 1
+        valid_hours.append({
+            "t": k["t"], "o": round(k["o"], 6), "h": round(k["h"], 6),
+            "l": round(k["l"], 6), "c": round(k["c"], 6),
+            "gain_pct": round(gain, 1),
+        })
+        if gain >= 15:
+            big_days += 1
+        consec += 1
+
+    if consec < 3 or big_days < 2:
+        return None
+
+    if not _check_hl_climb_tolerant(klines, n - 1, cfg):
+        return None
+
+    if n >= 6:
+        prev5 = [klines[j].get("q", 0) for j in range(n - 6, n - 1)]
+        avg5 = sum(prev5) / 5
+        if today.get("q", 0) < avg5 * 0.5:
+            return None
+
+    today_gain = (today["c"] - today["o"]) / today["o"] * 100
+    valid_hours.reverse()
+    return {
+        "symbol": symbol,
+        "upper": round(upper, 6),
+        "close": round(today["c"], 6),
+        "today_gain_pct": round(today_gain, 1),
+        "consecutive_days": consec,
+        "big_gain_days": big_days,
+        "valid_hours": valid_hours,
+    }
+
+
+def _refresh_cc_cache():
+    """后台刷新CC爆发信号"""
+    global _cc_cache
+
+    with _daily_kline_lock:
+        spot_cache = dict(_daily_kline_cache)
+    with _daily_kline_lock_futures:
+        fut_cache = dict(_daily_kline_cache_futures)
+
+    cfg = DAILY_BB_CONFIG
+    results = []
+
+    all_symbols = set(spot_cache.keys()) | set(fut_cache.keys())
+    for symbol in all_symbols:
+        klines = spot_cache.get(symbol) or fut_cache.get(symbol)
+        if klines is None:
+            continue
+        signal = _detect_cc(symbol, klines, cfg)
+        if signal:
+            results.append(signal)
+
+    results.sort(key=lambda x: -x["today_gain_pct"])
+    print(f"[CC] 刷新完成: {len(results)}个CC爆发信号 (基于{len(all_symbols)}币种)")
+
+    with _cc_lock:
+        _cc_cache = {
+            "results": results[:30],
+            "updated_at": time.time(),
+        }
+
+
+@app.route("/api/resurrection_queue")
+def api_resurrection_queue():
+    """返回复活赛队列"""
+    with _resurrection_lock:
+        queue = dict(_resurrection_queue)
+    return jsonify({"code": 0, "count": len(queue), "data": queue})
+
+
+@app.route("/api/cc_signals")
+def api_cc_signals():
+    """返回CC爆发检测信号"""
+    with _cc_lock:
+        cache = dict(_cc_cache)
+    return jsonify({
+        "code": 0,
+        "count": len(cache.get("results", [])),
+        "data": cache.get("results", []),
+        "updated_at": cache.get("updated_at", 0),
+    })
 
 
 @app.route("/api/bollinger_climb")
@@ -1387,6 +1600,10 @@ _bb_daily_cache = {"results": [], "candidates": [], "updated_at": 0}
 _bb_daily_lock = threading.Lock()
 _bb_diagnostic = {"total": 0, "breakdown": {}, "symbols": {}, "updated_at": 0}
 _bb_diagnostic_lock = threading.Lock()
+_cc_cache = {"results": [], "updated_at": 0}  # CC爆发检测
+_cc_lock = threading.Lock()
+_resurrection_queue = {}  # {symbol: {"bearish_ts": int, "bearish_o": float, "bearish_c": float}}  复活赛队列
+_resurrection_lock = threading.Lock()
 
 DAILY_BB_CONFIG = {
     "period": 20,
@@ -1429,6 +1646,8 @@ DAILY_BB_CONFIG = {
 # ========== 日线K线缓存（V7策略核心数据源）==========
 _daily_kline_cache = {}
 _daily_kline_lock = threading.Lock()
+_daily_kline_cache_futures = {}  # 合约日线（用于现货/合约阴阳一致性检查）
+_daily_kline_lock_futures = threading.Lock()
 
 
 def _fetch_daily_klines(symbol: str, limit: int = 40) -> list:
@@ -1461,52 +1680,106 @@ def _fetch_daily_klines(symbol: str, limit: int = 40) -> list:
         return []
 
 
+def _fetch_futures_daily_klines(symbol: str, limit: int = 40) -> list:
+    """从币安合约API获取日线K线"""
+    try:
+        resp = _requests_session.get(
+            "https://fapi.binance.com/fapi/v1/klines",
+            params={"symbol": symbol, "interval": "1d", "limit": limit},
+            timeout=10
+        )
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        if not data:
+            return []
+        result = []
+        for k in data:
+            result.append({
+                "t": int(k[0]) // 1000,
+                "o": float(k[1]),
+                "h": float(k[2]),
+                "l": float(k[3]),
+                "c": float(k[4]),
+                "v": float(k[5]),
+                "q": float(k[7]),
+                "buy_ratio": 0.5,
+            })
+        return result
+    except Exception as e:
+        return []
+
+
 def _load_all_daily_klines():
-    """批量加载所有币种的日线K线（并发20线程）"""
-    global _daily_kline_cache
+    """批量加载所有币种的日线K线（现货+合约，并发20线程）"""
+    global _daily_kline_cache, _daily_kline_cache_futures
 
     with data_lock:
-        symbols = list(market_data.get("symbols", {}).keys())
+        spot_symbols = set(market_data.get("symbols", {}).keys())
 
-    if not symbols:
+    # 合约交易对（含现货没有的币种，如TAGUSDT）
+    fut_symbols = set()
+    try:
+        resp = _requests_session.get("https://fapi.binance.com/fapi/v1/exchangeInfo", timeout=15)
+        if resp.status_code == 200:
+            for s in resp.json().get("symbols", []):
+                if s.get("status") == "TRADING" and s.get("quoteAsset") == "USDT" and s.get("contractType") == "PERPETUAL":
+                    fut_symbols.add(s["symbol"])
+    except Exception:
+        pass
+
+    all_symbols = list(spot_symbols | fut_symbols)
+
+    if not all_symbols:
         print("[DAILY_KLINES] 无币种列表，跳过加载")
         return
 
-    print(f"[DAILY_KLINES] 开始批量加载 {len(symbols)} 个币种的日线K线...")
+    print(f"[DAILY_KLINES] 开始批量加载 {len(all_symbols)} 个币种的日线K线（现货{len(spot_symbols)}+合约{len(fut_symbols)}）...")
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     loaded = 0
+    loaded_fut = 0
     failed = 0
+    failed_fut = 0
     start_ts = time.time()
 
     def fetch_one(sym):
-        klines = _fetch_daily_klines(sym)
-        return sym, klines
+        spot = _fetch_daily_klines(sym)
+        fut = _fetch_futures_daily_klines(sym)
+        return sym, spot, fut
 
     with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = {pool.submit(fetch_one, sym): sym for sym in symbols}
+        futures = {pool.submit(fetch_one, sym): sym for sym in all_symbols}
         for future in as_completed(futures):
-            sym, klines = future.result()
-            if klines and len(klines) >= DAILY_BB_CONFIG["period"] + 1:
+            sym, spot_kl, fut_kl = future.result()
+            if spot_kl and len(spot_kl) >= DAILY_BB_CONFIG["period"] + 1:
                 with _daily_kline_lock:
-                    _daily_kline_cache[sym] = klines
+                    _daily_kline_cache[sym] = spot_kl
                 loaded += 1
             else:
                 failed += 1
+            if fut_kl and len(fut_kl) >= DAILY_BB_CONFIG["period"] + 1:
+                with _daily_kline_lock_futures:
+                    _daily_kline_cache_futures[sym] = fut_kl
+                loaded_fut += 1
+            else:
+                failed_fut += 1
 
     elapsed = time.time() - start_ts
-    print(f"[DAILY_KLINES] 加载完成: {loaded}/{len(symbols)} 成功, {failed} 失败, 耗时{elapsed:.1f}s")
+    print(f"[DAILY_KLINES] 加载完成: 现货{loaded}/{len(all_symbols)} 合约{loaded_fut}/{len(all_symbols)} | 失败现货{failed}合约{failed_fut} | 耗时{elapsed:.1f}s")
 
 
 def _refresh_bb_daily_cache():
-    """后台刷新日线布林爬坡缓存（使用日线K线缓存，非小时K线聚合）"""
+    """后台刷新日线布林爬坡缓存（现货+合约日线）"""
     global _bb_daily_cache, _bb_diagnostic
 
     with _daily_kline_lock:
         daily_cache = dict(_daily_kline_cache)
+    with _daily_kline_lock_futures:
+        futures_cache = dict(_daily_kline_cache_futures)
 
-    if not daily_cache:
+    if not daily_cache and not futures_cache:
         print("[BB_DAILY] 日线K线缓存为空，跳过刷新")
         return
 
@@ -1515,8 +1788,61 @@ def _refresh_bb_daily_cache():
     breakdown = {}
     diag_symbols = {}
 
-    for symbol, daily_klines in daily_cache.items():
-        signal, reason, detail = _diagnose_bb(symbol, daily_klines, cfg)
+    # ==== 复活赛：不走①~⑪，只看反包 ====
+    with _resurrection_lock:
+        queue = dict(_resurrection_queue)
+    resurrected = []
+    for symbol, info in queue.items():
+        # 拿最新的日线数据
+        klines = daily_cache.get(symbol) or futures_cache.get(symbol)
+        if not klines or len(klines) < 3:
+            continue
+        cmpl = klines[-2]  # 最近完工日线 (如05-05)
+        cmpl_prev = klines[-3]  # 前一根 (如05-04)
+        # 确认前一根就是我们记录的阴线
+        if cmpl_prev["t"] != info["bearish_ts"]:
+            continue
+        # 查反包
+        if cmpl["c"] >= cmpl["o"]:
+            engulfing = (cmpl["o"] <= info["bearish_c"] and cmpl["c"] >= info["bearish_o"])
+            if engulfing:
+                # 复活！直接给BB信号，跳过①~⑪
+                results.append({
+                    "symbol": symbol,
+                    "upper": 0,
+                    "middle": 0,
+                    "consecutive_hours": 4,
+                    "resurrected": True,
+                    "valid_hours": [],
+                })
+                resurrected.append(symbol)
+                print(f"[BB复活] {symbol} 反包成功，直接给BB信号")
+    # 清理已复活/已淘汰的
+    for sym in resurrected:
+        _resurrection_queue.pop(sym, None)
+    # 淘汰：前日收阴但完工日线还是阴（没反包）
+    for symbol, info in list(_resurrection_queue.items()):
+        klines = daily_cache.get(symbol) or futures_cache.get(symbol)
+        if not klines or len(klines) < 3:
+            continue
+        cmpl = klines[-2]
+        if cmpl["t"] <= info["bearish_ts"]:
+            continue  # 还没到检测时间
+        # 完工日线的时间戳已过了复活窗口 → 淘汰
+        if cmpl["c"] < cmpl["o"]:
+            _resurrection_queue.pop(symbol, None)
+            print(f"[BB淘汰] {symbol} 复活失败，已移除")
+
+    # ==== 正常检测流程 ====
+    # 复活赛的币跳过正常检测
+    all_symbols = set(daily_cache.keys()) | set(futures_cache.keys())
+    all_symbols -= set(_resurrection_queue.keys())  # 复活赛中的币不走正常流程
+
+    for symbol in all_symbols:
+        klines = daily_cache.get(symbol) or futures_cache.get(symbol)
+        if klines is None:
+            continue
+        signal, reason, detail = _diagnose_bb(symbol, klines, cfg)
         breakdown[reason] = breakdown.get(reason, 0) + 1
 
         if detail:
@@ -1525,10 +1851,17 @@ def _refresh_bb_daily_cache():
         if signal and signal.get("consecutive_hours", 0) >= 4:
             results.append(signal)
 
-    results.sort(key=lambda x: -x["consecutive_hours"])
-    total = len(daily_cache)
-    n_passed = breakdown.get("passed", 0)
-    print(f"[BB_DAILY] 刷新完成: {n_passed}个BB信号/{total}币种 (每币种~{len(next(iter(daily_cache.values())))}天数据)")
+    results.sort(key=lambda x: -(x.get("consecutive_hours", 0)))
+    total = len(all_symbols) + len(_resurrection_queue)
+    n_passed = breakdown.get("passed", 0) + len(resurrected)
+    spot_count = len(daily_cache)
+    fut_count = sum(1 for s in all_symbols if s not in daily_cache)
+    queue_count = len(_resurrection_queue)
+    msg = f"[BB_DAILY] 刷新完成: {n_passed}个BB信号/{total}币种 (现货{spot_count}+合约{fut_count}"
+    if queue_count:
+        msg += f" 复活赛{queue_count}"
+    msg += ")"
+    print(msg)
     # 打印分布
     for reason in sorted(breakdown.keys(), key=lambda r: -breakdown[r]):
         print(f"  {reason}: {breakdown[reason]} ({breakdown[reason]/total*100:.0f}%)")
@@ -1568,11 +1901,13 @@ def bb_daily_background_loop():
                 print(f"[BB_DAILY] symbols就绪 ({len(symbols)}个币种)，开始加载日线K线")
                 _load_all_daily_klines()
                 _refresh_bb_daily_cache()
+                _refresh_cc_cache()
                 first_run = False
 
             time.sleep(60)
             _load_all_daily_klines()
             _refresh_bb_daily_cache()
+            _refresh_cc_cache()
 
         except Exception as e:
             print(f"[BB_DAILY] 刷新失败: {e}")

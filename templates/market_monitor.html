@@ -452,7 +452,7 @@
     </div>
 
     <!-- 大单追踪面板 -->
-    <div class="surge-panel" id="surge_panel">
+    <div class="surge-panel" id="surge_panel" style="display:none">
         <h2 class="collapsible" onclick="togglePanel('surge_grid')">🔥 大单追踪（delta_q &gt; 50万/秒）<span class="toggle-icon">▼</span></h2>
         <div class="surge-grid" id="surge_grid">
             <div class="surge-empty">加载中...</div>
@@ -460,15 +460,33 @@
     </div>
 
     <!-- 15分钟成交量突增面板 -->
-    <div class="surge-panel" id="vol_surge_panel" style="margin-top:10px; border-color: #ff4757;">
+    <div class="surge-panel" id="vol_surge_panel" style="display:none">
         <h2 class="collapsible" onclick="togglePanel('vol_surge_grid')" style="color: #ff4757;">🔥 15分钟成交量突增（&gt;3.0倍，最近1小时）<span class="toggle-icon">▼</span></h2>
         <div class="surge-grid" id="vol_surge_grid">
             <div class="surge-empty">暂无突增</div>
         </div>
     </div>
 
+    <!-- CC爆发检测面板 -->
+    <div class="surge-panel" id="cc_panel" style="margin-top:10px; border-color: #d2991d;">
+        <h2 class="collapsible" onclick="togglePanel('cc_grid')" style="color: #ff9500;">🚀 CC爆发信号（连续大阳线+放量）<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="cc_grid">
+            <div class="surge-empty">加载中...</div>
+        </div>
+    </div>
+
+    <!-- BTC ETF 流量 -->
+    <div class="surge-panel" id="etf_panel" style="margin-top:10px; border-color: #58a6ff;">
+        <h2 class="collapsible" onclick="togglePanel('etf_grid')" style="color: #58a6ff;">📊 BTC/ETH ETF 每日净流入 (数据源: Farside)<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="etf_grid">
+            <div style="text-align:center;padding:10px;">
+                <img src="/static/etf_flow_chart.png" style="max-width:100%;border-radius:6px;" alt="ETF Flow Chart">
+            </div>
+        </div>
+    </div>
+
     <!-- 布林爬坡预警面板 -->
-    <div class="surge-panel" id="climb_panel" style="margin-top:10px;">
+    <div class="surge-panel" id="climb_panel" style="display:none">
         <h2 class="collapsible" onclick="togglePanel('climb_grid')">📈 布林爬坡预警（贴着布林上轨连续3小时buy_ratio&gt;55%）<span class="toggle-icon">▼</span></h2>
         <div class="surge-grid" id="climb_grid">
             <div class="surge-empty">暂无信号（需等待数据积累）</div>
@@ -476,7 +494,7 @@
     </div>
 
     <!-- 布林候选蓄力面板 -->
-    <div class="surge-panel" id="candidate_panel" style="margin-top:10px; border-color: #c07800;">
+    <div class="surge-panel" id="candidate_panel" style="display:none">
         <h2 class="collapsible" onclick="togglePanel('candidate_grid')" style="color: #e8a020;">🔶 布林候选蓄力（爬坡断后在上轨附近蓄力≥3小时）<span class="toggle-icon">▼</span></h2>
         <div class="surge-grid" id="candidate_grid">
             <div class="surge-empty">暂无候选</div>
@@ -727,6 +745,40 @@
         }
         setInterval(loadVolSurge, 10000);  // 每10秒更新
         loadVolSurge();
+
+        // CC爆发信号
+        let ccData = [];
+        function loadCC() {
+            fetch('/api/cc_signals')
+                .then(r => r.json())
+                .then(res => {
+                    if (res.code === 0) {
+                        ccData = res.data || [];
+                        renderCC();
+                    }
+                })
+                .catch(() => {});
+        }
+        setInterval(loadCC, 30000);
+        loadCC();
+
+        function renderCC() {
+            const grid = document.getElementById('cc_grid');
+            if (ccData.length === 0) {
+                grid.innerHTML = '<div class="surge-empty">无CC爆发信号</div>';
+                return;
+            }
+            grid.innerHTML = ccData.map(s => {
+                return '<div class="surge-item" style="border-color:#d2991d;background:#1a1408;">'+
+                    '<div class="delta"><span>币种:</span> <span style="color:#ff9500;font-weight:700;">'+s.symbol+'</span></div>'+
+                    '<div class="delta"><span>今日涨幅:</span> <span style="color:#3fb950;font-size:16px;">+'+s.today_gain_pct+'%</span></div>'+
+                    '<div class="delta"><span>连续阳线:</span> '+s.consecutive_days+'天</div>'+
+                    '<div class="delta"><span>爆量>15%:</span> '+s.big_gain_days+'天</div>'+
+                    '<div class="delta"><span>上轨:</span> '+s.upper.toFixed(6)+'</div>'+
+                    '<div class="delta"><span>现价:</span> '+s.close.toFixed(6)+'</div>'+
+                    '</div>';
+            }).join('');
+        }
 
         function renderVolSurge() {
             const grid = document.getElementById('vol_surge_grid');

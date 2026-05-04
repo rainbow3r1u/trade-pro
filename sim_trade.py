@@ -127,8 +127,111 @@ futures_account = {
 }
 futures_positions = []  # [{symbol, entry_price, quantity, margin, leverage, position_value, entry_time, tp_price, sl_price, signal_type, signal_detail}]
 
+# ---- 验证层：资金费率 + 恐惧贪婪指数 ----
+FUNDING_CACHE = {}          # {symbol: rate}
+FUNDING_LAST_FETCH = 0      # 上次拉取时间戳
+FUNDING_FETCH_INTERVAL = 3600  # 每小时拉一次
+FUNDING_MAX_RATE = 0.0005   # 0.05% 做多成本上限
+
+FEAR_GREED_VALUE = 50       # 当前值(0-100)，默认50
+FEAR_GREED_LAST_FETCH = 0
+FEAR_GREED_FETCH_INTERVAL = 86400  # 每天一次
+
+ETF_BTC_FLOW = 0            # 昨日BTC ETF净流入(百万$)，默认0
+ETF_FLOW_PATH = "/home/myuser/openclaw-5001-host/config/.openclaw/workspace/etf_data/etf_flow.json"
+
+def check_etf_flow() -> bool:
+    """读取ETF数据，返回是否允许VS交易（流入=允许，流出=禁止）"""
+    global ETF_BTC_FLOW
+    try:
+        with open(ETF_FLOW_PATH, "r") as f:
+            data = json.load(f)
+        btc = data.get("btc", [])
+        if btc:
+            ETF_BTC_FLOW = btc[-1].get("total_flow", 0)
+            if ETF_BTC_FLOW < 0:
+                return False  # 流出，禁止VS
+    except Exception:
+        pass
+    return True
+
+def fetch_funding_rates():
+    """拉取全部合约资金费率"""
+    global FUNDING_CACHE, FUNDING_LAST_FETCH
+    now = time.time()
+    if now - FUNDING_LAST_FETCH < FUNDING_FETCH_INTERVAL:
+        return
+    try:
+        resp = requests.get("https://fapi.binance.com/fapi/v1/premiumIndex", timeout=10)
+        if resp.status_code != 200:
+            return
+        for item in resp.json():
+            sym = item.get("symbol", "")
+            if sym.endswith("USDT"):
+                rate = float(item.get("lastFundingRate", 0))
+                FUNDING_CACHE[sym] = rate
+        FUNDING_LAST_FETCH = now
+        high = sum(1 for r in FUNDING_CACHE.values() if r > FUNDING_MAX_RATE)
+        print(f"[资金费率] 已缓存 {len(FUNDING_CACHE)} 币种 | 费率>0.05%: {high} 个")
+    except Exception as e:
+        print(f"[资金费率] 拉取失败: {e}")
+
+def check_funding_filter(symbol: str) -> tuple:
+    """检查资金费率是否通过。返回 (ok, reason)"""
+    futures_sym = SPOT_TO_FUTURES.get(symbol, symbol)
+    rate = FUNDING_CACHE.get(futures_sym, 0)
+    if abs(rate) < 0.000001:
+        # 缓存里没有，先拉一次
+        fetch_funding_rates()
+        rate = FUNDING_CACHE.get(futures_sym, 0)
+    if rate > FUNDING_MAX_RATE:
+        return False, f"资金费率{rate*100:.2f}% > 0.05%，做多成本过高"
+    return True, f"费率{rate*100:.2f}%"
+
+def fetch_fear_greed():
+    """拉取恐惧贪婪指数"""
+    global FEAR_GREED_VALUE, FEAR_GREED_LAST_FETCH
+    now = time.time()
+    if now - FEAR_GREED_LAST_FETCH < FEAR_GREED_FETCH_INTERVAL:
+        return
+    try:
+        resp = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
+        if resp.status_code != 200:
+            return
+        data = resp.json().get("data", [])
+        if data:
+            FEAR_GREED_VALUE = int(data[0]["value"])
+            FEAR_GREED_LAST_FETCH = now
+            cls = data[0].get("value_classification", "")
+            print(f"[恐惧贪婪] {FEAR_GREED_VALUE} ({cls})")
+    except Exception as e:
+        print(f"[恐惧贪婪] 拉取失败: {e}")
+
+def get_risk_adjusted_max_positions() -> int:
+    """根据恐惧贪婪指数动态调整最大现货持仓数"""
+    global FEAR_GREED_VALUE
+    fetch_fear_greed()
+    v = FEAR_GREED_VALUE
+    if v > 85:
+        return max(5, SPOT_MAX_POSITIONS // 3)   # 极端贪婪：萎缩到1/3
+    elif v > 70:
+        return max(8, SPOT_MAX_POSITIONS // 2)   # 贪婪：减半
+    elif v < 20:
+        return SPOT_MAX_POSITIONS                # 极端恐惧：全额（信号质量高）
+    elif v < 35:
+        return min(SPOT_MAX_POSITIONS, 25)       # 恐惧：偏积极
+    return SPOT_MAX_POSITIONS                     # 中性：不变
+
 # 联动状态
 spot_entry_ts = {}  # {symbol: entry_timestamp} 记录每个币种的现货入场时间
+
+# ---- CC爆发策略：合约前置锚 ----
+CC_ANCHOR_MARGIN = 5           # 每个CC锚保证金 5 USDT
+CC_ANCHOR_TP_PCT = 1.0         # CC锚止盈100%
+CC_ANCHOR_SL_PCT = 0.02        # CC锚止损2%
+CC_ANCHOR_MAX = 10              # CC锚最大数量
+cc_anchors = []  # [{symbol, entry_price, quantity, margin, entry_time, tp_price, sl_price}]
+cc_entry_ts = {}  # {symbol: entry_timestamp}
 
 # 过滤/冷却状态
 daily_take_profit_count = {}  # {(symbol, date_str): count} 合约日止盈计数
@@ -152,11 +255,21 @@ def api_get(endpoint: str) -> dict:
         return {}
 
 def get_current_price(symbol: str) -> float:
+    # 先试现货
     try:
         resp = requests.get(
             "https://api.binance.com/api/v3/ticker/price",
-            params={"symbol": symbol},
-            timeout=5
+            params={"symbol": symbol}, timeout=5
+        )
+        if resp.status_code == 200:
+            return float(resp.json().get("price", 0))
+    except:
+        pass
+    # 现货没有，试合约
+    try:
+        resp = requests.get(
+            "https://fapi.binance.com/fapi/v1/ticker/price",
+            params={"symbol": symbol}, timeout=5
         )
         if resp.status_code == 200:
             return float(resp.json().get("price", 0))
@@ -345,9 +458,10 @@ def open_spot_position(symbol: str, entry_price: float, signal_detail: dict = No
     if get_spot_position(symbol):
         return False
     
-    if get_spot_positions_count() >= SPOT_MAX_POSITIONS:
+    max_pos = get_risk_adjusted_max_positions()
+    if get_spot_positions_count() >= max_pos:
         return False
-    
+
     if spot_account["balance"] < SPOT_PER_TRADE:
         return False
     
@@ -478,7 +592,17 @@ def check_spot_positions():
             pnl = calculate_pnl(entry_price, current_price, quantity)
             positions_to_close.append((pos, "STOP_LOSS", current_price, pnl))
             continue
-    
+
+    # BB信号消失检测（阴线踢出）
+    if spot_positions and not positions_to_close:
+        bb_signal_symbols = {s.get("symbol") for s in get_bb_climb_signals()}
+        for pos in spot_positions:
+            if pos["symbol"] not in bb_signal_symbols:
+                current_price = get_current_price(pos["symbol"])
+                if current_price > 0:
+                    pnl = calculate_pnl(pos["entry_price"], current_price, pos["quantity"])
+                    positions_to_close.append((pos, "BB_SIGNAL_LOST", current_price, pnl))
+
     for pos, reason, price, pnl in positions_to_close:
         close_spot_position(pos, reason, price, pnl)
 
@@ -493,7 +617,8 @@ def evaluate_spot_signals():
             continue
         if get_spot_position(symbol):
             continue
-        if get_spot_positions_count() >= SPOT_MAX_POSITIONS:
+        adjusted_max = get_risk_adjusted_max_positions()
+        if get_spot_positions_count() >= adjusted_max:
             break
         if spot_account["balance"] < SPOT_PER_TRADE:
             break
@@ -516,6 +641,122 @@ def evaluate_spot_signals():
             "24h成交额(亿)": round(vol_24h / 1e8, 2),
         }
         open_spot_position(symbol, entry_price, signal_detail)
+
+
+# ========== CC爆发策略 ==========
+
+def get_cc_signals() -> list:
+    data = api_get("/api/cc_signals")
+    return data.get("data", [])
+
+
+def get_cc_anchor(symbol: str):
+    for a in cc_anchors:
+        if a["symbol"] == symbol:
+            return a
+    return None
+
+
+def get_cc_anchor_count() -> int:
+    return len(cc_anchors)
+
+
+def open_cc_anchor(symbol: str, entry_price: float, signal_detail: dict = None):
+    """开CC合约前置锚（无杠杆，等效现货锚）"""
+    global cc_anchors
+
+    if get_cc_anchor(symbol):
+        return False
+    if get_cc_anchor_count() >= CC_ANCHOR_MAX:
+        return False
+
+    margin = CC_ANCHOR_MARGIN
+    quantity = margin / entry_price  # 无杠杆，保证金=仓位价值
+
+    tp_price = entry_price * (1 + CC_ANCHOR_TP_PCT)
+    sl_price = entry_price * (1 - CC_ANCHOR_SL_PCT)
+
+    anchor = {
+        "symbol": symbol,
+        "entry_price": entry_price,
+        "quantity": quantity,
+        "margin": margin,
+        "entry_time": time.time(),
+        "tp_price": tp_price,
+        "sl_price": sl_price,
+        "strategy": "CC",
+    }
+    cc_anchors.append(anchor)
+    cc_entry_ts[symbol] = time.time()
+    save_state()
+
+    print(f"[CC锚开仓] {symbol} @ {format_price(entry_price)} | 保证金: {margin} USDT | TP: {format_price(tp_price)} | SL: {format_price(sl_price)}")
+    return True
+
+
+def close_cc_anchor(anchor: dict, reason: str, close_price: float):
+    """平CC锚"""
+    global cc_anchors
+    pnl = (close_price - anchor["entry_price"]) * anchor["quantity"]
+    spot_account["balance"] += pnl
+    spot_account["total_pnl"] += pnl
+    spot_account["total_trades"] += 1
+    if pnl > 0:
+        spot_account["win_trades"] += 1
+    else:
+        spot_account["loss_trades"] += 1
+    if spot_account["total_trades"] > 0:
+        spot_account["win_rate"] = spot_account["win_trades"] / spot_account["total_trades"] * 100
+
+    cc_anchors.remove(anchor)
+    cc_entry_ts.pop(anchor["symbol"], None)
+    save_state()
+    print(f"[CC锚平仓] {reason} {anchor['symbol']} @ {format_price(close_price)} | PnL: {pnl:+.2f} USDT")
+
+
+def evaluate_cc_signals():
+    """评估CC爆发信号并开合约前置锚"""
+    signals = get_cc_signals()
+
+    for sig in signals:
+        symbol = sig.get("symbol", "")
+
+        if symbol in EXCLUDE_SYMBOLS:
+            continue
+        if get_spot_position(symbol) or get_cc_anchor(symbol):
+            continue
+        if get_cc_anchor_count() >= CC_ANCHOR_MAX:
+            break
+
+        entry_price = get_current_price(symbol)
+        if entry_price <= 0:
+            continue
+
+        # CC不过日涨幅过滤（CC抓的就是暴涨）
+        open_cc_anchor(symbol, entry_price, {
+            "today_gain": sig.get("today_gain_pct", 0),
+            "consecutive": sig.get("consecutive_days", 0),
+        })
+
+
+def check_cc_anchors():
+    """检查CC锚止盈止损"""
+    for anchor in list(cc_anchors):
+        symbol = anchor["symbol"]
+        price = get_current_price(symbol)
+        if price <= 0:
+            continue
+
+        if price >= anchor["tp_price"]:
+            close_cc_anchor(anchor, "TAKE_PROFIT", price)
+        elif price <= anchor["sl_price"]:
+            close_cc_anchor(anchor, "STOP_LOSS", price)
+
+
+def has_cc_or_spot(symbol: str) -> bool:
+    """检查币种是否有BB现货或CC锚"""
+    return get_spot_position(symbol) is not None or get_cc_anchor(symbol) is not None
+
 
 # ========== 合约策略 ==========
 
@@ -557,16 +798,30 @@ def open_futures_position(symbol: str, signal_type: str, entry_price: float,
     if get_futures_positions_count() >= FUT_MAX_POSITIONS:
         return False
 
+    # 风险层：BTC ETF昨日流出 → 禁止VS
+    if not check_etf_flow():
+        print(f"[合约跳过] {symbol} BTC ETF昨日净流出 ${abs(ETF_BTC_FLOW):.0f}M，暂停VS交易")
+        return False
+
+    # 验证层：资金费率过滤
+    rate_ok, rate_reason = check_funding_filter(symbol)
+    if not rate_ok:
+        print(f"[合约跳过] {symbol} {rate_reason}")
+        return False
+
     available = get_futures_available_balance()
     if available < FUT_MARGIN:
         return False
 
-    # 【V7核心约束】必须在现货持仓中
-    if not get_spot_position(symbol):
+    # 【V7核心约束】必须在BB现货或CC锚持仓中
+    has_spot = get_spot_position(symbol) is not None
+    has_cc = get_cc_anchor(symbol) is not None
+    if not has_spot and not has_cc:
         return False
 
-    # 【V7核心约束】必须在现货持仓中（时序检查已在evaluate_futures_signals中完成）
-    if symbol not in spot_entry_ts:
+    # 时序检查：开仓时间必须在锚之后
+    anchor_ts = max(spot_entry_ts.get(symbol, 0), cc_entry_ts.get(symbol, 0))
+    if anchor_ts == 0:
         return False
 
     # 日止盈过滤
@@ -856,6 +1111,8 @@ def save_state():
         "cooldown_symbols": cooldown_symbols,
         "tp_per_symbol": tp_per_symbol,
         "exhausted_symbols": list(exhausted_symbols),
+        "cc_anchors": cc_anchors,
+        "cc_entry_ts": cc_entry_ts,
         "spot_trade_log": spot_trade_log[-50:],
         "futures_trade_log": futures_trade_log[-50:],
         "saved_at": datetime.now().isoformat(),
@@ -874,7 +1131,7 @@ def save_state():
 def load_state():
     global spot_account, spot_positions, futures_account, futures_positions
     global spot_entry_ts, daily_take_profit_count, cooldown_symbols
-    global tp_per_symbol, exhausted_symbols
+    global tp_per_symbol, exhausted_symbols, cc_anchors, cc_entry_ts
     
     if not os.path.exists(SIM_TRADE_STATE_FILE):
         return
@@ -903,7 +1160,10 @@ def load_state():
         if exhausted_symbols:
             print(f"[状态恢复] 已耗尽币种: {len(exhausted_symbols)} 个 - {','.join(list(exhausted_symbols)[:5])}")
 
-        print(f"[状态恢复] 现货持仓: {len(spot_positions)} | 合约持仓: {len(futures_positions)}")
+        cc_anchors[:] = state.get("cc_anchors", [])
+        cc_entry_ts.update(state.get("cc_entry_ts", {}))
+
+        print(f"[状态恢复] 现货持仓: {len(spot_positions)} | CC锚: {len(cc_anchors)} | 合约持仓: {len(futures_positions)}")
     except Exception as e:
         print(f"[状态恢复失败] {e}")
 
@@ -930,8 +1190,13 @@ def print_status():
     print(f"\n{'='*70}")
     print(f"V7 混合策略 @ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*70}")
-    print(f"【现货】权益: {spot_equity:.2f} USDT | 余额: {spot_account['balance']:.2f} | 未实现: {spot_unrealized:+.2f} | 持仓: {len(spot_positions)}/{SPOT_MAX_POSITIONS} | 胜率: {spot_account['win_rate']:.0f}%")
-    print(f"【合约】权益: {fut_equity:.2f} USDT | 余额: {futures_account['balance']:.2f} | 未实现: {fut_unrealized:+.2f} | 持仓: {len(futures_positions)}/{FUT_MAX_POSITIONS} | 胜率: {futures_account['win_rate']:.0f}%")
+    max_pos = get_risk_adjusted_max_positions()
+    fg_str = f" F&G={FEAR_GREED_VALUE}" if FEAR_GREED_VALUE > 70 or FEAR_GREED_VALUE < 35 else ""
+    print(f"【BB现货】权益: {spot_equity:.2f} USDT | 余额: {spot_account['balance']:.2f} | 未实现: {spot_unrealized:+.2f} | 持仓: {len(spot_positions)}/{max_pos}{fg_str}")
+    if cc_anchors:
+        cc_unrealized = sum((get_current_price(a['symbol']) - a['entry_price']) * a['quantity'] for a in cc_anchors)
+        print(f"【CC锚】数量: {len(cc_anchors)} | 未实现: {cc_unrealized:+.2f} USDT")
+    print(f"【合约VS】权益: {fut_equity:.2f} USDT | 余额: {futures_account['balance']:.2f} | 未实现: {fut_unrealized:+.2f} | 持仓: {len(futures_positions)}/{FUT_MAX_POSITIONS} | 胜率: {futures_account['win_rate']:.0f}%")
     print(f"【综合】权益: {spot_equity + fut_equity:.2f} USDT | 回撤: 现货{spot_account['max_drawdown']:.1f}% 合约{futures_account['max_drawdown']:.1f}%")
     
     if spot_positions:
@@ -942,6 +1207,13 @@ def print_status():
             status = "✓止盈" if current >= pos["tp_price"] else ("✗止损" if current <= pos["sl_price"] else "持仓中")
             print(f"  {pos['symbol']:<14} 入:{format_price(pos['entry_price']):<12} 现:{format_price(current):<12} {pnl_pct:>+7.2f}% {status}")
     
+    if cc_anchors:
+        print(f"\nCC锚持仓:")
+        for a in cc_anchors:
+            current = get_current_price(a["symbol"])
+            pnl_pct = ((current - a["entry_price"]) / a["entry_price"] * 100) if current > 0 else 0
+            print(f"  {a['symbol']:<14} 入:{format_price(a['entry_price']):<12} 现:{format_price(current):<12} {pnl_pct:>+7.2f}%")
+
     if futures_positions:
         print(f"\n合约持仓:")
         for pos in futures_positions:
@@ -987,6 +1259,8 @@ def main():
             # 检查并平仓
             if spot_positions:
                 check_spot_positions()
+            if cc_anchors:
+                check_cc_anchors()
             if futures_positions:
                 check_futures_positions()
             
@@ -994,10 +1268,13 @@ def main():
             if now - last_signal_check >= 10:
                 last_signal_check = now
                 evaluate_spot_signals()
+                evaluate_cc_signals()
                 evaluate_futures_signals()
             
-            # 每60秒打印状态
+            # 每60秒：刷新验证层数据 + 打印状态
             if now - last_status_time >= 60:
+                fetch_funding_rates()
+                fetch_fear_greed()
                 last_status_time = now
                 print_status()
                 save_state()

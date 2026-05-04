@@ -97,6 +97,12 @@ tr:active td { background: #1c2129; }
 
 <div class="mini-stats" id="miniStats"></div>
 
+<!-- CC信号 -->
+<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:12px;margin:10px 0;" id="ccBox">
+  <h3 style="margin:0 0 8px;font-size:13px;color:#ff9500;">CC 爆发检测</h3>
+  <div id="ccSignals" style="font-size:11px;color:#8b949e;">加载中...</div>
+</div>
+
 <div class="funnel" id="funnel"></div>
 
 <div class="t-wrap">
@@ -115,7 +121,7 @@ tr:active td { background: #1c2129; }
       <th class="num-col">上轨</th>
       <th class="num-col">偏离</th>
       <th class="num-col">日量</th>
-      <th class="num-col">24均量</th>
+      <th class="num-col">5日均量</th>
       <th class="num-col">量比</th>
       <th class="num-col">波幅</th>
       <th class="num-col">连续</th>
@@ -130,22 +136,24 @@ let allData = {breakdown:{}, symbols:{}, total:0};
 let curF = 'all', curQ = '';
 
 const STAGES = [
-  {key:'excluded',          label:'1.排除列表'},
-  {key:'too_short',         label:'2.数据不足'},
-  {key:'not_trading',       label:'3.未交易'},
-  {key:'bb_calc_fail',      label:'3.BB计算'},
-  {key:'bb_idx_fail',       label:'3.BB索引'},
-  {key:'below_mid',         label:'4.收盘>中轨'},
-  {key:'off_upper',         label:'5.在上轨±8%内'},
-  {key:'buy_ratio_low',     label:'6.买盘比'},
-  {key:'hl_fail',           label:'7.HL爬升'},
-  {key:'atr_fail',          label:'8.ATR波幅'},
-  {key:'consecutive_short', label:'9.连续≥4天'},
-  {key:'vol_low',           label:'10.量能>1.2x'},
+  {key:'excluded',           label:'1.排除列表'},
+  {key:'too_short',          label:'2.数据不足'},
+  {key:'not_trading',        label:'3.未交易'},
+  {key:'bb_calc_fail',       label:'3.BB计算'},
+  {key:'bb_idx_fail',         label:'3.BB索引'},
+  {key:'below_mid',          label:'4.收盘>中轨'},
+  {key:'off_upper',          label:'5.在上轨±8%内'},
+  {key:'buy_ratio_low',      label:'6.买盘比'},
+  {key:'hl_fail',            label:'7.HL爬升'},
+  {key:'atr_fail',           label:'8.ATR波幅'},
+  {key:'consecutive_short',  label:'9.连续≥4天'},
+  {key:'spot_fut_mismatch',  label:'10.现货/合约阴阳一致'},
+  {key:'vol_low',              label:'11.量能(宽松/严格)'},
+  {key:'close_bearish_revoked', label:'12.退出:收阴无反包→剔除'},
 ];
 const SM = {}; STAGES.forEach(s => SM[s.key]=s);
-const ORDER = ['excluded','too_short','not_trading','bb_calc_fail','bb_idx_fail','below_mid','off_upper','buy_ratio_low','hl_fail','atr_fail','consecutive_short','vol_low'];
-const TAG = {below_mid:'below_mid',off_upper:'off_upper',vol_low:'vol_low',hl_fail:'hl_fail',atr_fail:'atr_fail',consecutive_short:'cons_short',excluded:'excluded'};
+const ORDER = ['excluded','too_short','not_trading','bb_calc_fail','bb_idx_fail','below_mid','off_upper','buy_ratio_low','hl_fail','atr_fail','consecutive_short','spot_fut_mismatch','vol_low','close_bearish_revoked'];
+const TAG = {below_mid:'below_mid',off_upper:'off_upper',vol_low:'vol_low',hl_fail:'hl_fail',atr_fail:'atr_fail',consecutive_short:'cons_short',spot_fut_mismatch:'other',close_bearish_revoked:'other',excluded:'excluded'};
 
 async function refresh() {
   try {
@@ -188,7 +196,7 @@ function render() {
   ms.innerHTML =
     '<div class="chip"><div class="n">'+entered+'</div><div class="l">进入检测</div></div>'+
     '<div class="chip w"><div class="n">'+(b.off_upper||0)+'</div><div class="l">偏离上轨⑤</div></div>'+
-    '<div class="chip f"><div class="n">'+(b.vol_low||0)+'</div><div class="l">量能不足⑩</div></div>'+
+    '<div class="chip f"><div class="n">'+(b.vol_low||0)+'</div><div class="l">量能<5日均⑪</div></div>'+
     '<div class="chip"><div class="n">'+afterVol+'</div><div class="l">通过⑦量能</div></div>';
 
   // Funnel
@@ -202,7 +210,9 @@ function render() {
     {label:'HL爬升',        enter: 0,       rej: b.hl_fail||0, cls:'hl_fail'},
     {label:'ATR波幅',       enter: 0,       rej: b.atr_fail||0, cls:'atr_fail'},
     {label:'连续≥4天',      enter: 0,       rej: b.consecutive_short||0, cls:'cons_short'},
-    {label:'量能>1.2x均量', enter: 0,       rej: b.vol_low||0, cls:'vol_low'},
+    {label:'现货/合约阴阳一致', enter: 0,     rej: b.spot_fut_mismatch||0, cls:'other'},
+    {label:'量能(宽松/严格)', enter: 0,      rej: b.vol_low||0, cls:'vol_low'},
+    {label:'退出:前日阴线',  enter: 0,       rej: b.close_bearish_revoked||0, cls:'other'},
   ];
   let remaining = entered;
   for (let i = 2; i < pipeline.length; i++) { pipeline[i].enter = remaining; remaining -= pipeline[i].rej; }
@@ -229,7 +239,7 @@ function render() {
   let syms = allData.symbols;
   let rows = [];
   for (let sym in syms) { let s = syms[sym]; rows.push({symbol:sym, ...s}); }
-  let order = {below_mid:0, off_upper:1, hl_fail:2, atr_fail:3, consecutive_short:4, vol_low:5};
+  let order = {below_mid:0, off_upper:1, hl_fail:2, atr_fail:3, consecutive_short:4, spot_fut_mismatch:5, vol_low:6, close_bearish_revoked:7};
   rows.sort((a,b) => {
     let oa = order[a.reason] ?? 9, ob = order[b.reason] ?? 9;
     if (oa !== ob) return oa - ob;
@@ -251,7 +261,7 @@ function render() {
       '<td class="num-col">'+(r.upper!=null?r.upper.toFixed(6):'-')+'</td>'+
       '<td class="num-col">'+(r.gap_pct!=null?r.gap_pct.toFixed(1)+'%':'-')+'</td>'+
       '<td class="num-col">'+(r.q!=null?fn(r.q):'-')+'</td>'+
-      '<td class="num-col">'+(r.avg_vol_24!=null?fn(r.avg_vol_24):'-')+'</td>'+
+      '<td class="num-col">'+(r.avg_vol_5d!=null?fn(r.avg_vol_5d):'-')+'</td>'+
       '<td class="num-col">'+(r.vol_ratio!=null?r.vol_ratio.toFixed(2)+'x':'-')+'</td>'+
       '<td class="num-col">'+(r.range!=null?r.range.toFixed(6):'-')+'</td>'+
       '<td class="num-col">'+(r.consecutive!=null?r.consecutive:'-')+'</td>'+
@@ -267,8 +277,32 @@ function fn(n) { if (n>=1e9) return (n/1e9).toFixed(1)+'B'; if (n>=1e6) return (
 function filterByStage(v) { curF = v; render(); }
 function filterSymbol(q) { curQ = q.toLowerCase(); render(); }
 
+function renderCC() {
+  fetch('/api/cc_signals').then(r => r.json()).then(d => {
+    if (d.code !== 0 || !d.data?.length) {
+      document.getElementById('ccSignals').innerHTML = '<span style="color:#484f58;">无CC爆发信号</span>';
+      return;
+    }
+    let html = '<div style="display:flex;flex-wrap:wrap;gap:8px;">';
+    for (let s of d.data) {
+      html += '<div style="background:#21262d;border:1px solid #d2991d;border-radius:6px;padding:8px 12px;flex:1;min-width:160px;">'+
+        '<div style="font-weight:700;color:#ff9500;">'+s.symbol+'</div>'+
+        '<div style="font-size:18px;font-weight:700;color:#3fb950;">+'+s.today_gain_pct+'%</div>'+
+        '<div style="font-size:10px;color:#8b949e;">连续'+s.consecutive_days+'阳 | 爆量'+s.big_gain_days+'天>15%</div>'+
+        '<div style="font-size:10px;color:#8b949e;">上轨='+s.upper.toFixed(6)+' | close='+s.close?.toFixed(6)+'</div>'+
+        '</div>';
+    }
+    html += '</div>';
+    document.getElementById('ccSignals').innerHTML = html;
+  }).catch(() => {
+    document.getElementById('ccSignals').innerHTML = '<span style="color:#f85149;">加载失败</span>';
+  });
+}
+
 refresh();
+renderCC();
 setInterval(refresh, 30000);
+setInterval(renderCC, 30000);
 </script>
 </body>
 </html>
