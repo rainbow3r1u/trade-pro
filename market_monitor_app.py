@@ -8,6 +8,7 @@
 import os
 import io
 import json
+import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -448,7 +449,8 @@ STABLECOIN_PAIRS = {
 }
 
 VOL_SURGE_MIN_AVG_VOL = 5_000  # 前4小时均值最低门槛 5000 USDT，避免极小均值产生极端ratio
-VOL_SURGE_MIN_GAIN_PCT = 2.3   # 15分钟K线最小涨幅（与回测min_gain_pct对齐）
+VOL_SURGE_MIN_GAIN_PCT = 0.8   # 15m涨幅下限（回测最优区间0.8-1.5%）
+VOL_SURGE_MAX_GAIN_PCT = 1.5   # 15m涨幅上限（超过就是追涨送死）
 
 def check_volume_surge(symbol: str, current_15m_vol: float, avg_4h_vol: float):
     """检测15分钟成交量突增"""
@@ -469,9 +471,10 @@ def check_volume_surge(symbol: str, current_15m_vol: float, avg_4h_vol: float):
     if first_price <= 0:
         return False
     gain_15m = (last_price - first_price) / first_price * 100
-    if gain_15m < VOL_SURGE_MIN_GAIN_PCT:
+    if gain_15m < VOL_SURGE_MIN_GAIN_PCT or gain_15m > VOL_SURGE_MAX_GAIN_PCT:
         return False
-    if avg_4h_vol > 0 and current_15m_vol > avg_4h_vol * 4.0:
+    # ratio带通: 1.0x≤ratio≤2.0x (回测最优区间)
+    if avg_4h_vol > 0 and current_15m_vol > avg_4h_vol * 1.0 and current_15m_vol < avg_4h_vol * 2.0:
         surge_info = {
             "start_time": time.time(),
             "ratio": current_15m_vol / avg_4h_vol,
@@ -887,6 +890,19 @@ def _update_today_open_from_hourly_cache(hourly_cache: dict):
 
 
 # ========== 币种分类映射 ==========
+SECTOR_MAP = {}
+SECTOR_CACHE = "/tmp/crypto_sectors.json"
+
+def _load_sectors():
+    global SECTOR_MAP
+    try:
+        with open(SECTOR_CACHE, 'r') as f:
+            SECTOR_MAP = json.load(f)
+    except:
+        pass
+
+_load_sectors()
+
 CATEGORY_MAP = {
     "XAUUSDT": ("黄金", "贵金属"),
     "XAUTUSDT": ("黄金", "贵金属"),
@@ -900,6 +916,7 @@ CATEGORY_MAP = {
 
 def get_table_data():
     """获取表格数据（排序后）"""
+    _load_sectors()  # 每天更新的板块缓存
     acquired = data_lock.acquire(timeout=5.0)
     if not acquired:
         return []
@@ -921,10 +938,17 @@ def get_table_data():
         price = info["price"]
         o = today_open_prices.get(symbol, 0)
         if o <= 0:
+            with _daily_kline_lock:
+                dkl = _daily_kline_cache.get(symbol, [])
+            if dkl:
+                o = dkl[-1].get("o", 0)  # 日线开盘价
+        if o <= 0:
             o = info.get("o", 0)
         gain_pct = (price - o) / o * 100 if o > 0 else 0
 
-        cat_name, cat_type = CATEGORY_MAP.get(symbol, (None, None))
+        sectors = SECTOR_MAP.get(symbol, [])
+        cat_name = sectors[0] if sectors else None
+        cat_type = sectors[0].lower() if sectors else None
         
         # 使用今日累计成交额
         vol_24h = vol_24h_today.get(symbol, info.get("q", 0))
@@ -937,8 +961,8 @@ def get_table_data():
         if current_15m == 0:
             current_15m = vol_15m_current.get(symbol, 0)
         
-        # 检查是否突增：使用与 check_volume_surge 一致的阈值 3.0x
-        VOL_SURGE_THRESHOLD = 4.0
+        # 检查是否突增：使用与 check_volume_surge 一致的阈值 1.4x（回测最优）
+        VOL_SURGE_THRESHOLD = 1.4
         is_surge = False
         surge_ratio = 0
         if (vol_15m_avg >= VOL_SURGE_MIN_AVG_VOL 
@@ -1391,35 +1415,31 @@ def _diagnose_bb(symbol: str, klines: list, cfg: dict) -> tuple:
         else:
             return None, "vol_low", detail
 
-    # 12. 复活赛入口（仅宽松通过的进入）
-    #   收阴 → 加入复活赛队列，BB信号死
-    #   复活赛不看①~⑪，只等反包
+    # 12. 反包复活（仅宽松通过 + 前日收阴的进入）
+    #   两天结构：[-3]阴被[-2]阳吞掉 → 复活给信号
+    #   不收阴的由⑪自行判断，不归⑫管
     if passed_relaxed and len(klines) >= 3:
-        cmpl = klines[-2]        # 最近完工日线 (如05-05)
-        cmpl_prev = klines[-3]   # 再前一根 (如05-04)
+        cmpl = klines[-2]        # 最近完工日线
+        cmpl_prev = klines[-3]   # 再前一根
 
-        prev_bear = (cmpl_prev["c"] < cmpl_prev["o"])
-
-        if prev_bear and cmpl["c"] >= cmpl["o"]:
-            # 前日阴 + 昨日阳 → 复活赛：查反包
+        if cmpl_prev["c"] < cmpl_prev["o"] and cmpl["c"] >= cmpl["o"]:
+            # 前阴+昨阳 → 查反包
             engulfing = (cmpl["o"] <= cmpl_prev["c"] and cmpl["c"] >= cmpl_prev["o"])
             if engulfing:
                 detail["engulfing"] = True
                 detail["prev_close"] = round(cmpl_prev["c"], 6)
                 detail["prev_open"] = round(cmpl_prev["o"], 6)
             else:
+                # 未反包 → 阴线存入队列（未淘汰过的）
+                with _resurrection_lock:
+                    _resurrection_queue[symbol] = {
+                        "bearish_ts": cmpl_prev["t"],
+                        "bearish_o": cmpl_prev["o"],
+                        "bearish_c": cmpl_prev["c"],
+                    }
                 return None, "close_bearish_revoked", detail
-        elif prev_bear:
-            # 前日阴+昨日也阴 → 复用昨日阴线入队等反包
-            with _resurrection_lock:
-                _resurrection_queue[symbol] = {
-                    "bearish_ts": cmpl["t"],
-                    "bearish_o": cmpl["o"],
-                    "bearish_c": cmpl["c"],
-                }
-            return None, "close_bearish_revoked", detail
         elif cmpl["c"] < cmpl["o"]:
-            # 最近完工收阴 → 存入复活赛队列
+            # 最近完工收阴 → 存入队列（未淘汰过的）
             with _resurrection_lock:
                 _resurrection_queue[symbol] = {
                     "bearish_ts": cmpl["t"],
@@ -1427,10 +1447,7 @@ def _diagnose_bb(symbol: str, klines: list, cfg: dict) -> tuple:
                     "bearish_c": cmpl["c"],
                 }
             return None, "close_bearish_revoked", detail
-        # else: 两根都阳 → 正常，但今天必须阳线
-        elif last_k["c"] <= last_k["o"]:
-            return None, "close_bearish_revoked", detail
-        # 今天阳线 → 通过
+        # 两根都阳：不归⑫管，⑪已判过
 
     # PASSED
     signal = {
@@ -1449,13 +1466,13 @@ def _diagnose_bb(symbol: str, klines: list, cfg: dict) -> tuple:
     return signal, "passed", detail
 
 
-def _detect_cc(symbol: str, klines: list, cfg: dict) -> dict | None:
+def _detect_cc(symbol: str, klines: list, cfg: dict, force_pass: bool = False) -> dict | None:
     """CC爆发检测: 连续大阳线+放量+价格在上轨附近/上方。
     抓BB爬坡漏掉的火箭发射型币种（如TAGUSDT）。
 
     条件:
-      - 连续>=3天阳线
-      - 其中>=2天涨幅>=15%
+      - 连续>=2天阳线
+      - 其中>=1天涨幅>=15%
       - 价格在上轨95%以上
       - HL爬升通过
       - 量能不低于5日均的50%
@@ -1477,6 +1494,10 @@ def _detect_cc(symbol: str, klines: list, cfg: dict) -> dict | None:
 
     upper = uppers[bi]
     today = klines[-1]
+
+    # 已锁定的跳过盘中检测，只在日线收阴时解锁
+    if force_pass:
+        return _detect_cc_force(symbol, klines, cfg)
 
     if today["c"] <= today["o"]:
         return None
@@ -1501,7 +1522,24 @@ def _detect_cc(symbol: str, klines: list, cfg: dict) -> dict | None:
             big_days += 1
         consec += 1
 
-    if consec < 3 or big_days < 2:
+    # 通过条件：连阳2天+爆量1天，或反包结构
+    if consec >= 2 and big_days >= 1:
+        pass  # 正常通过
+    elif n >= 3:
+        # 反包复活：klines[-2]阳吞klines[-3]阴，且[-2]爆量>15%
+        cmpl = klines[-2]; cmpl_prev = klines[-3]
+        if (cmpl_prev["c"] < cmpl_prev["o"]  # 前日阴
+            and cmpl["c"] > cmpl["o"]         # 昨日阳
+            and cmpl["o"] <= cmpl_prev["c"]   # 开盘≤阴收
+            and cmpl["c"] >= cmpl_prev["o"]): # 收盘≥阴开
+            engulf_gain = (cmpl["c"] - cmpl["o"]) / cmpl["o"] * 100
+            if engulf_gain >= 15:
+                pass  # 反包通过，连阳从昨日计1天
+            else:
+                return None
+        else:
+            return None
+    else:
         return None
 
     if not _check_hl_climb_tolerant(klines, n - 1, cfg):
@@ -1526,9 +1564,35 @@ def _detect_cc(symbol: str, klines: list, cfg: dict) -> dict | None:
     }
 
 
+def _detect_cc_force(symbol: str, klines: list, cfg: dict) -> dict | None:
+    """已锁定的CC信号：只检查日线收阴，收阴则解锁"""
+    if len(klines) < 3:
+        _cc_locked.pop(symbol, None)
+        return None
+    cmpl = klines[-2]  # 最近完工日线
+    if cmpl["c"] < cmpl["o"]:  # 收阴 → 解锁
+        _cc_locked.pop(symbol, None)
+        return None
+    # 未收阴 → 保持锁定，更新价格但保留原始统计数据
+    cached = _cc_locked.get(symbol, {})
+    closes = [k["c"] for k in klines]
+    mids, uppers = _compute_rolling_bb(closes, cfg["period"], cfg["std_mult"])
+    n = len(klines); bi = n - 1 - cfg["period"] + 1
+    upper = uppers[bi] if bi < len(uppers) else 0
+    gain = (klines[-1]["c"] - klines[-1]["o"]) / klines[-1]["o"] * 100
+    return {
+        "symbol": symbol, "upper": round(upper, 6),
+        "close": round(klines[-1]["c"], 6),
+        "today_gain_pct": round(gain, 1),
+        "consecutive_days": cached.get("consecutive_days", 0),
+        "big_gain_days": cached.get("big_gain_days", 0),
+        "locked": True, "valid_hours": [],
+    }
+
+
 def _refresh_cc_cache():
     """后台刷新CC爆发信号"""
-    global _cc_cache
+    global _cc_cache, _cc_locked
 
     with _daily_kline_lock:
         spot_cache = dict(_daily_kline_cache)
@@ -1543,9 +1607,16 @@ def _refresh_cc_cache():
         klines = spot_cache.get(symbol) or fut_cache.get(symbol)
         if klines is None:
             continue
-        signal = _detect_cc(symbol, klines, cfg)
+        force = symbol in _cc_locked
+        signal = _detect_cc(symbol, klines, cfg, force_pass=force)
         if signal:
             results.append(signal)
+            if not signal.get("locked"):
+                # 首次触发，缓存原始数据
+                _cc_locked[symbol] = {
+                    "consecutive_days": signal.get("consecutive_days", 0),
+                    "big_gain_days": signal.get("big_gain_days", 0),
+                }
 
     results.sort(key=lambda x: -x["today_gain_pct"])
     print(f"[CC] 刷新完成: {len(results)}个CC爆发信号 (基于{len(all_symbols)}币种)")
@@ -1557,12 +1628,473 @@ def _refresh_cc_cache():
         }
 
 
+@app.route("/api/sector_heatmap")
+def api_sector_heatmap():
+    try:
+        with open("/tmp/sector_heatmap.json", "r") as f:
+            return jsonify({"code": 0, "data": json.load(f)})
+    except:
+        return jsonify({"code": 0, "data": []})
+
+
+NOTES_FILE = "/tmp/trading_notes.json"
+
+def _load_notes():
+    try:
+        with open(NOTES_FILE, 'r') as f:
+            return json.load(f).get("notes", [])
+    except:
+        return []
+
+def _save_notes(notes):
+    with open(NOTES_FILE, 'w') as f:
+        json.dump({"notes": notes, "updated": time.time()}, f)
+
+@app.route("/api/notes", methods=["GET", "POST", "DELETE"])
+def api_notes():
+    if request.method == "GET":
+        return jsonify({"code": 0, "notes": _load_notes()})
+    elif request.method == "DELETE":
+        idx = request.args.get("id", "")
+        notes = _load_notes()
+        notes = [n for n in notes if n.get("id") != idx]
+        _save_notes(notes)
+        return jsonify({"code": 0})
+    else:
+        data = request.get_json() or {}
+        notes = _load_notes()
+        note_id = data.get("id", "")
+        title = data.get("title", "").strip()
+        content = data.get("content", "").strip()
+
+        if note_id:  # 编辑已有
+            for n in notes:
+                if n.get("id") == note_id:
+                    if title: n["title"] = title
+                    n["content"] = content
+                    n["updated_at"] = time.time()
+                    break
+        else:  # 新建
+            notes.append({
+                "id": str(uuid.uuid4())[:8],
+                "title": title or "无标题",
+                "content": content,
+                "created_at": time.time(),
+                "updated_at": time.time(),
+            })
+        _save_notes(notes)
+        return jsonify({"code": 0, "notes": notes})
+
+
+def _fetch_mcp_context(query: str) -> str:
+    """根据用户问题智能预拉相关数据"""
+    import re as _re
+    parts = []
+
+    # 提取币种
+    symbols = _re.findall(r'\b([A-Z]{2,10})USDT\b|\b([A-Z]{2,10})\b', query.upper())
+    coins = set()
+    for m in symbols:
+        coins.add((m[0] or m[1]) + 'USDT')
+
+    # 1. 价格+行情
+    price_words = ['价格','行情','涨','跌','突破','支撑','阻力','多少','价位','现在']
+    if any(w in query for w in price_words) and coins:
+        for sym in list(coins)[:3]:
+            try:
+                import requests as _req
+                r = _req.get(f"https://api.binance.com/api/v3/ticker/24hr", params={"symbol": sym}, timeout=5)
+                d = r.json()
+                parts.append(f"{sym}: 价格={d.get('lastPrice')} 24h涨跌={d.get('priceChangePercent')}% 成交量={float(d.get('quoteVolume',0))/1e6:.1f}M")
+            except: pass
+
+    # 2. 吸筹信号
+    if any(w in query for w in ['吸筹','量比','天量','放量','缩量','TON模式']):
+        try:
+            with open("/tmp/accumulation_scan.json") as f:
+                data = json.load(f)
+            top = data.get("results", [])[:8]
+            lines = []
+            for r in top:
+                lines.append(f"{r['symbol']}: {r['signal_date']}出现吸筹信号(量比{r['vol_ratio']}x,价格{r['signal_price']:.4f})，信号至今涨幅{r['fwd_return']:.1f}%，当前价{r['current_price']:.4f}")
+            parts.append("近期吸筹信号(注意:信号日是吸筹出现日,涨幅=信号日到现在的收益,不是当日涨幅):\n" + "\n".join(lines))
+        except: pass
+
+    # 3. 资金费率
+    if any(w in query for w in ['费率','资金费率','funding']):
+        for sym in list(coins)[:2]:
+            try:
+                r = _req.get(f"https://fapi.binance.com/fapi/v1/premiumIndex", params={"symbol": sym}, timeout=5)
+                d = r.json()
+                parts.append(f"{sym} 资金费率: {float(d.get('lastFundingRate',0))*100:.4f}%")
+            except: pass
+
+    # 4. 板块数据
+    if any(w in query for w in ['板块','赛道','行业','Meme','AI','L1','L2','DeFi','RWA']):
+        try:
+            with open("/tmp/sector_heatmap.json") as f:
+                data = json.load(f)
+            parts.append("板块资金流: " + ", ".join(f"{s['name']}{s['mc_change_pct']:+.1f}%" for s in data[:6]))
+        except: pass
+
+    # 5. 历史新闻
+    if any(w in query for w in ['新闻','消息','公告','事件','为什么']):
+        keywords = [c.replace('USDT','') for c in list(coins)[:2]]
+        for kw in keywords:
+            archive = "/home/myuser/news_monitor/archive"
+            results = []
+            try:
+                for fname in sorted(os.listdir(archive), reverse=True)[:30]:
+                    with open(os.path.join(archive, fname)) as f:
+                        for line in f:
+                            if kw.lower() in line.lower() and len(line.strip())>15:
+                                results.append(line.strip()[:120])
+                                if len(results)>=3: break
+                    if len(results)>=3: break
+                if results:
+                    parts.append(f"{kw}相关新闻: {'; '.join(results)}")
+            except: pass
+
+    # 6. CMC新闻(从日报读取，每天已抓取)
+    if any(w in query for w in ['CMC','coinmarketcap','市场热点','最新消息','头条','热点新闻']):
+        try:
+            report_path = "/home/myuser/news_monitor/daily_report.txt"
+            if os.path.exists(report_path):
+                with open(report_path) as f:
+                    in_cmc = False
+                    lines = []
+                    for line in f:
+                        if '市场热点' in line:
+                            in_cmc = True
+                            continue
+                        if in_cmc and '━━━' in line:
+                            break
+                        if in_cmc and line.strip().startswith('📰'):
+                            lines.append(line.strip()[:200])
+                            if len(lines) >= 10:
+                                break
+                    if lines:
+                        parts.append("CMC今日市场热点:\n" + "\n".join(f"  {l}" for l in lines))
+        except: pass
+
+    # 7. CMC主动搜索 (当日报没有覆盖时)
+    if any(w in query for w in ['搜索CMC','查CMC','搜索一下','帮我查','查查','有没有.*新闻','搜.*CMC']):
+        keywords = [w for w in query.split() if len(w) >= 3 and not w.startswith('搜')][:3]
+        for kw in keywords[:2]:
+            try:
+                from playwright.sync_api import sync_playwright
+                def _cmc_search(keyword):
+                    with sync_playwright() as p:
+                        b = p.chromium.launch(headless=True, args=['--no-sandbox','--disable-blink-features=AutomationControlled'])
+                        ctx = b.new_context(viewport={'width':1920,'height':1080},user_agent='Mozilla/5.0')
+                        page = ctx.new_page()
+                        page.goto(f'https://coinmarketcap.com/community/articles/browse/?sort=-publishedOn', wait_until='domcontentloaded',timeout=15000)
+                        page.wait_for_timeout(3000)
+                        titles = page.evaluate(f'''()=>{{
+                            return Array.from(document.querySelectorAll('div[class*="post-item"]'))
+                                .map(el=>el.textContent.replace(/\\\\s+/g,' ').trim())
+                                .filter(t=>t.toLowerCase().includes("{keyword.lower()}"))
+                                .slice(0,5).map(t=>t.slice(0,200));
+                        }}''')
+                        b.close()
+                        return titles
+                results = _cmc_search(kw)
+                if results:
+                    parts.append("CMC搜索[" + kw + "]结果:\n" + "\n".join("  • " + r for r in results))
+                break  # 只搜第一个有效关键词
+            except:
+                pass
+
+    # 8. SoSoValue宏观
+    if any(w in query for w in ['宏观','市值','成交量','市场情绪','sosovalue']):
+        try:
+            report_path = "/home/myuser/news_monitor/daily_report.txt"
+            if os.path.exists(report_path):
+                with open(report_path) as f:
+                    in_sec = False
+                    for line in f:
+                        if '市场宏观' in line or 'SoSoValue' in line:
+                            in_sec = True
+                            continue
+                        if in_sec and line.strip().startswith('📰'):
+                            parts.append("SoSoValue: " + line.strip()[:200])
+                        if in_sec and ('━━━' in line or '币安公告' in line):
+                            in_sec = False
+        except: pass
+
+    return "\n[实时数据]\n" + "\n".join(parts) if parts else ""
+
+
+_async_tasks = {}  # 异步AI任务缓存
+
+@app.route("/api/ask", methods=["POST"])
+def api_ask():
+    """AI搜索：异步执行，返回task_id供轮询"""
+    data = request.get_json() or {}
+    news_title = data.get("title", "")
+    question = data.get("question", "")
+    history = data.get("history", [])
+
+    if not news_title or not question:
+        return jsonify({"code": 1, "msg": "缺少参数"})
+
+    history_text = ""
+    if history:
+        history_text = "对话历史：\n"
+        for h in history[-6:]:
+            history_text += f"用户: {h.get('q','')}\n分析师: {h.get('a','')[:200]}\n"
+
+    # MCP预查：智能提取上下文数据
+    mcp_context = _fetch_mcp_context(news_title + " " + question)
+
+    prompt = f"""你是一位加密货币市场分析师。根据以下数据回答用户问题（300字以内，中文）。
+
+注意：吸筹信号的"涨幅"是从信号出现日至今的累计收益，不是单日涨跌。
+信号日=主力资金异动日，涨幅=从那天到现在总共涨了多少。
+
+新闻/标题：{news_title}
+{mcp_context}
+{history_text}
+用户问题：{question}
+
+请直接回答，不需要问候语。数据中有具体数字的请引用。"""
+
+    # 异步执行：立即返回task_id，后台继续跑
+    task_id = str(uuid.uuid4())[:8]
+    _async_tasks[task_id] = {"status": "running", "created_at": time.time(), "title": news_title, "question": question}
+
+    def _run_ai():
+        try:
+            import requests as _req
+            resp = _req.post(
+                "https://api.deepseek.com/anthropic/v1/messages",
+                headers={
+                    "x-api-key": "sk-aa0ce45ba5ca4d4a9a89878b713161fa",
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={"model": "deepseek-v4-pro[1m]", "max_tokens": 800, "messages": [{"role": "user", "content": prompt}]},
+                timeout=90
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                for block in result.get("content", []):
+                    if block.get("type") == "text":
+                        _async_tasks[task_id] = {"status": "done", "answer": block.get("text",""), "created_at": time.time()}
+                        return
+            _async_tasks[task_id] = {"status": "error", "msg": f"API:{resp.status_code}", "created_at": time.time()}
+        except Exception as e:
+            _async_tasks[task_id] = {"status": "error", "msg": str(e), "created_at": time.time()}
+
+    threading.Thread(target=_run_ai, daemon=True).start()
+    return jsonify({"code": 0, "task_id": task_id, "status": "running"})
+
+
+@app.route("/api/ask/status")
+def api_ask_status():
+    task_id = request.args.get("id", "")
+    if task_id in _async_tasks:
+        return jsonify(_async_tasks[task_id])
+    return jsonify({"status": "not_found"})
+
+
+@app.route("/api/guardian_status")
+def api_guardian_status():
+    try:
+        with open("/tmp/guardian_status.json", "r") as f:
+            return jsonify({"code": 0, **json.load(f)})
+    except:
+        return jsonify({"code": 0, "services": []})
+
+
+@app.route("/api/predictions")
+def api_predictions():
+    try:
+        with open("/tmp/daily_predictions.json", "r") as f:
+            return jsonify({"code": 0, **json.load(f)})
+    except:
+        return jsonify({"code": 0, "predictions": [], "updated": 0})
+
+
+@app.route("/api/accumulation")
+def api_accumulation():
+    if request.args.get("scan"):
+        def run_scan():
+            try:
+                from accumulation_scanner import scan
+                scan()
+            except Exception as e:
+                print(f"Accumulation scan failed: {e}")
+        threading.Thread(target=run_scan, daemon=True).start()
+        return jsonify({"code": 0, "msg": "扫描已触发"})
+    try:
+        with open("/tmp/accumulation_scan.json", "r") as f:
+            return jsonify({"code": 0, **json.load(f)})
+    except:
+        return jsonify({"code": 0, "found": 0, "results": []})
+
+
+@app.route("/accumulation")
+def page_accumulation():
+    response = make_response(render_template("accumulation.html"))
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
+
+
+@app.route("/api/sector_coins")
+def api_sector_coins():
+    """返回某个板块的币种列表"""
+    sector = request.args.get("name", "")
+    _load_sectors()
+    coins = []
+    with data_lock:
+        syms = dict(market_data.get("symbols", {}))
+    for bsym, labels in SECTOR_MAP.items():
+        if sector in (labels or []):
+            info = syms.get(bsym, {})
+            if info:
+                price = info.get("price", 0)
+                # 用日线开盘价，和get_table_data一致
+                with _daily_kline_lock:
+                    dkl = _daily_kline_cache.get(bsym, [])
+                o = 0
+                if dkl:
+                    o = dkl[-1].get("o", 0)
+                if o <= 0:
+                    o = price
+                gain = (price - o) / o * 100 if o > 0 else 0
+                coins.append({
+                    "symbol": bsym,
+                    "gain_pct": round(gain, 1),
+                })
+    coins.sort(key=lambda x: -x["gain_pct"])
+    return jsonify({"code": 0, "name": sector, "count": len(coins), "data": coins[:30]})
+
+
+@app.route("/api/sector_heatmap")
+
+
 @app.route("/api/resurrection_queue")
 def api_resurrection_queue():
     """返回复活赛队列"""
     with _resurrection_lock:
         queue = dict(_resurrection_queue)
     return jsonify({"code": 0, "count": len(queue), "data": queue})
+
+
+@app.route("/api/cc_anchors")
+def api_cc_anchors():
+    """读取sim_trade的CC锚持仓状态"""
+    import json, os
+    state_file = "/tmp/sim_trade_state.json"
+    try:
+        if os.path.exists(state_file):
+            with open(state_file, "r") as f:
+                state = json.load(f)
+            anchors = state.get("cc_anchors", [])
+            return jsonify({"code": 0, "count": len(anchors), "data": anchors})
+    except Exception:
+        pass
+    return jsonify({"code": 0, "count": 0, "data": []})
+
+
+@app.route("/news")
+def page_news():
+    response = make_response(render_template("news.html"))
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
+
+
+@app.route("/api/news/search")
+def api_news_search():
+    """搜索历史日报，返回匹配的新闻条目"""
+    q = request.args.get("q", "").strip()
+    if not q or len(q) < 2:
+        return jsonify({"code": 1, "msg": "搜索词太短"})
+
+    archive_dir = "/home/myuser/news_monitor/archive"
+    results = []
+    try:
+        for fname in sorted(os.listdir(archive_dir), reverse=True)[:90]:  # 最近90天
+            if not fname.endswith('.txt'):
+                continue
+            filepath = os.path.join(archive_dir, fname)
+            date_str = fname.replace('daily_report_','').replace('.txt','')
+            with open(filepath, 'r') as f:
+                for line in f:
+                    if q.lower() in line.lower() and len(line.strip()) > 10:
+                        results.append({"date": date_str, "text": line.strip()[:200]})
+                        if len(results) >= 30:
+                            break
+            if len(results) >= 30:
+                break
+    except:
+        pass
+    return jsonify({"code": 0, "query": q, "count": len(results), "data": results})
+
+
+@app.route("/api/news")
+def api_news():
+    """解析日报txt返回JSON"""
+    import re
+    report_path = "/home/myuser/news_monitor/daily_report.txt"
+    try:
+        with open(report_path, 'r') as f:
+            text = f.read()
+    except:
+        return jsonify({"code": 1, "msg": "日报文件不存在"})
+
+    sections = []
+    current_section = None
+    current_category = None
+
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        # 日期行
+        if '日报' in line and '|' in line:
+            continue
+        # 区块头 ━━━ 📢 币安公告 ━━━
+        if '━━━' in line:
+            name = line.replace('━━━', '').strip()
+            current_section = {"name": name, "categories": [], "items": []}
+            sections.append(current_section)
+            current_category = None
+            continue
+        # 分类头 🆕 新币上架
+        if line.startswith(('🆕','📌','🎯','🗑️','🎁','🔥')):
+            parts = line.split(' ', 1)
+            icon = parts[0] if len(parts) > 0 else ''
+            title = parts[1] if len(parts) > 1 else line
+            if current_section:
+                current_category = {"icon": icon, "name": title, "items": []}
+                current_section["categories"].append(current_category)
+            continue
+        # 条目 • xxx → COIN  或  📰 xxx [COIN]
+        is_bullet = line.startswith('•')
+        is_cmc = line.lstrip().startswith('📰')
+        if is_bullet or is_cmc:
+            item_text = line.lstrip()[1:].strip() if is_cmc else line[1:].strip()
+            coins = []
+            # [COIN, COIN] bracket format (CMC)
+            bracket = re.search(r'\[([^\]]+)\]', item_text)
+            if bracket:
+                coins = [c.strip() for c in bracket.group(1).split(',') if c.strip()]
+                item_text = item_text[:bracket.start()].strip()
+            # → COIN,COIN format (Binance)
+            if '→' in item_text:
+                parts = item_text.rsplit('→', 1)
+                item_text = parts[0].strip()
+                coins2 = [c.strip() for c in parts[1].split(',') if c.strip()]
+                coins = list(set(coins + coins2))
+            item = {"title": item_text, "coins": coins}
+            if current_category:
+                current_category["items"].append(item)
+            elif current_section:
+                current_section["items"].append(item)
+
+    return jsonify({"code": 0, "data": sections, "updated": os.path.getmtime(report_path) if os.path.exists(report_path) else 0})
 
 
 @app.route("/api/cc_signals")
@@ -1602,6 +2134,7 @@ _bb_diagnostic = {"total": 0, "breakdown": {}, "symbols": {}, "updated_at": 0}
 _bb_diagnostic_lock = threading.Lock()
 _cc_cache = {"results": [], "updated_at": 0}  # CC爆发检测
 _cc_lock = threading.Lock()
+_cc_locked = {}  # {symbol: {consecutive_days, big_gain_days, today_gain_pct, ...}} 锁定信号缓存
 _resurrection_queue = {}  # {symbol: {"bearish_ts": int, "bearish_o": float, "bearish_c": float}}  复活赛队列
 _resurrection_lock = threading.Lock()
 
@@ -1793,50 +2326,42 @@ def _refresh_bb_daily_cache():
         queue = dict(_resurrection_queue)
     resurrected = []
     for symbol, info in queue.items():
-        # 拿最新的日线数据
         klines = daily_cache.get(symbol) or futures_cache.get(symbol)
         if not klines or len(klines) < 3:
             continue
-        cmpl = klines[-2]  # 最近完工日线 (如05-05)
-        cmpl_prev = klines[-3]  # 前一根 (如05-04)
-        # 确认前一根就是我们记录的阴线
-        if cmpl_prev["t"] != info["bearish_ts"]:
-            continue
-        # 查反包
+        cmpl = klines[-2]  # 最近完工日线
+        # 反包复活窗口已过（完工日线在阴线之后）
+        if cmpl["t"] <= info["bearish_ts"]:
+            continue  # 还没到检测时间
+        # 查反包：不靠时间戳，直接用存储的阴线数据
         if cmpl["c"] >= cmpl["o"]:
             engulfing = (cmpl["o"] <= info["bearish_c"] and cmpl["c"] >= info["bearish_o"])
             if engulfing:
-                # 复活！直接给BB信号，跳过①~⑪
                 results.append({
-                    "symbol": symbol,
-                    "upper": 0,
-                    "middle": 0,
-                    "consecutive_hours": 4,
-                    "resurrected": True,
-                    "valid_hours": [],
+                    "symbol": symbol, "upper": 0, "middle": 0,
+                    "consecutive_hours": 4, "resurrected": True, "valid_hours": [],
                 })
                 resurrected.append(symbol)
                 print(f"[BB复活] {symbol} 反包成功，直接给BB信号")
-    # 清理已复活/已淘汰的
-    for sym in resurrected:
-        _resurrection_queue.pop(sym, None)
-    # 淘汰：前日收阴但完工日线还是阴（没反包）
-    for symbol, info in list(_resurrection_queue.items()):
+            else:
+                print(f"[BB淘汰] {symbol} 阳线但未反包，淘汰")
+        else:
+            print(f"[BB淘汰] {symbol} 完工阴线，淘汰")
+    # 本轮被淘汰的（阳未反包 + 阴线）也收集
+    eliminated = []
+    for symbol, info in queue.items():
         klines = daily_cache.get(symbol) or futures_cache.get(symbol)
-        if not klines or len(klines) < 3:
-            continue
-        cmpl = klines[-2]
-        if cmpl["t"] <= info["bearish_ts"]:
-            continue  # 还没到检测时间
-        # 完工日线的时间戳已过了复活窗口 → 淘汰
-        if cmpl["c"] < cmpl["o"]:
-            _resurrection_queue.pop(symbol, None)
-            print(f"[BB淘汰] {symbol} 复活失败，已移除")
+        if klines and len(klines) >= 3 and klines[-2]["t"] > info["bearish_ts"]:
+            eliminated.append(symbol)
+    # 清理所有已处理的
+    for sym in resurrected + eliminated:
+        _resurrection_queue.pop(sym, None)
 
     # ==== 正常检测流程 ====
-    # 复活赛的币跳过正常检测
     all_symbols = set(daily_cache.keys()) | set(futures_cache.keys())
-    all_symbols -= set(_resurrection_queue.keys())  # 复活赛中的币不走正常流程
+    all_symbols -= set(_resurrection_queue.keys())
+    all_symbols -= set(resurrected)      # 已复活的不走
+    all_symbols -= set(eliminated)       # 已淘汰的不走
 
     for symbol in all_symbols:
         klines = daily_cache.get(symbol) or futures_cache.get(symbol)
@@ -2952,11 +3477,23 @@ def load_sim_trade_state():
         total_effective = spot_effective + futures_effective
         total_unrealized = spot_unrealized + futures_unrealized
         
+        # CC锚持仓
+        cc_anchors = state.get("cc_anchors", [])
+        cc_unrealized = 0
+        for a in cc_anchors:
+            symbol = a.get("symbol", "")
+            current_price = symbols.get(symbol, {}).get("price", a.get("entry_price", 0))
+            a["current_price"] = current_price
+            a["unrealized_pnl"] = (current_price - a["entry_price"]) * a.get("quantity", 0)
+            a["pnl_pct"] = (current_price - a["entry_price"]) / a["entry_price"] * 100 if a["entry_price"] > 0 else 0
+            cc_unrealized += a["unrealized_pnl"]
+
         return {
             "spot_account": spot_account,
             "spot_positions": spot_positions,
             "futures_account": futures_account,
             "futures_positions": futures_positions,
+            "cc_anchors": cc_anchors,
             "summary": {
                 "spot_positions_count": len(spot_positions),
                 "futures_positions_count": len(futures_positions),
@@ -2995,7 +3532,7 @@ def sim_trade_broadcast_loop():
             if state:
                 socketio.emit("sim_trade_update", state, namespace="/")
         except Exception as e:
-            print(f"[SIM_TRADE] 广播失败: {e}")
+            print(f"[SIM_TRADE] 广播失败: {e}", flush=True)
 
 
 # ========== 每日北京时间08:00从WebSocket捕获今日开盘价 ==========
@@ -3279,6 +3816,7 @@ def backtest_page():
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
 
+
 def _import_backtest_runner():
     """延迟导入 backtest_runner（避免触发 core/__init__.py 的 matplotlib 依赖）"""
     import importlib.util, sys
@@ -3360,7 +3898,7 @@ if __name__ == "__main__":
         threading.Thread(target=write_loop, daemon=True).start()
         threading.Thread(target=minute_aggregator_loop, daemon=True).start()
         threading.Thread(target=daily_open_price_update_loop, daemon=True).start()
-        threading.Thread(target=sim_trade_broadcast_loop, daemon=True).start()
+        socketio.start_background_task(sim_trade_broadcast_loop)
         threading.Thread(target=bb_daily_background_loop, daemon=True).start()
         threading.Thread(target=_refresh_snapshot_cache, daemon=True).start()
 

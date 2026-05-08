@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>吸筹扫描 — TON模式</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d1117;color:#c9d1d9;padding:12px;}
+h1{font-size:16px;color:#ff9500;margin-bottom:4px;}
+.nav{margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;}
+.nav a{color:#ff9500;text-decoration:none;font-size:12px;padding:4px 10px;border:1px solid #ff9500;border-radius:4px;}
+.updated{color:#8b949e;font-size:11px;margin-bottom:12px;}
+.info{font-size:12px;color:#8b949e;margin-bottom:12px;line-height:1.6;}
+.info b{color:#ff9500;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th{text-align:left;padding:8px 6px;background:#161b22;color:#8b949e;border-bottom:1px solid #30363d;}
+td{padding:8px 6px;border-bottom:1px solid #21262d;}
+tr:hover td{background:#161b22;}
+.up{color:#ff9500;font-weight:700;}
+.down{color:#7a4a00;}
+.num{text-align:right;}
+.btn-row{display:flex;gap:8px;margin-bottom:12px;}
+.btn-row button{background:#ff9500;color:#0d1117;border:none;padding:6px 14px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;}
+</style>
+</head>
+<body>
+<h1>TON式吸筹扫描</h1>
+<div class="nav">
+    <a href="/">← 行情监控</a>
+    <a href="/news">📰 日报</a>
+</div>
+<div class="updated" id="updated">加载中...</div>
+<div class="info">
+扫描条件：<b>量比>5x</b> 20日均量 + <b>价格低于EMA50</b> + <b>日涨幅<3%</b><br>
+逻辑：天量滞涨+低波动=主力暗中吸筹，后续爆发力强（参考TON +104%）
+</div>
+<div class="btn-row">
+    <button onclick="refresh()">🔄 刷新列表</button>
+<button onclick="triggerScan()" style="background:#7a4a00;">🔍 重新扫描(约60秒)</button>
+</div>
+<div id="cards"></div>
+
+<style>
+.card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:12px;margin-bottom:8px;}
+.card .head{display:flex;justify-content:space-between;align-items:center;cursor:pointer;}
+.card .head .sym{color:#ff9500;font-weight:700;font-size:14px;}
+.card .stats{display:flex;gap:12px;margin-top:6px;font-size:12px;color:#8b949e;flex-wrap:wrap;}
+.card .stats span{white-space:nowrap;}
+.ask-box{margin-top:8px;display:none;}
+.ask-box.show{display:block;}
+.ask-box input{width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:6px 8px;border-radius:4px;font-size:12px;}
+.ask-box button{margin-top:4px;background:#ff9500;color:#0d1117;border:none;padding:4px 12px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;}
+.answer{margin-top:6px;padding:8px;background:#0d1117;border-radius:4px;font-size:12px;line-height:1.6;display:none;}
+.answer.show{display:block;}
+</style>
+
+<script>
+const _chatHistory=JSON.parse(localStorage.getItem('acc_chat')||'{}');
+
+function saveChatHistory(){localStorage.setItem('acc_chat',JSON.stringify(_chatHistory));}
+
+function refresh(){
+    fetch('/api/accumulation').then(r=>r.json()).then(d=>{
+        document.getElementById('updated').textContent='扫描 '+d.scanned+' 个币种 | 发现 '+d.found+' 个信号';
+        const cards=document.getElementById('cards');
+        if(!d.results||!d.results.length){cards.innerHTML='<p style="color:#8b949e;">暂无信号</p>';return;}
+        cards.innerHTML=d.results.map((r,i)=>{
+            const cls=r.fwd_return>=0?'up':'down';
+            const sym=r.symbol;
+            return '<div class="card">'+
+                '<div class="head" onclick="toggleAsk(\''+sym+'\')">'+
+                '<span class="sym">'+sym+'</span>'+
+                '<span class="'+cls+'" style="font-size:16px;">'+(r.fwd_return>=0?'+':'')+r.fwd_return+'%</span></div>'+
+                '<div class="stats"><span>信号日:'+r.signal_date+'</span><span>量比:'+r.vol_ratio+'x</span><span>信号价:'+r.signal_price.toFixed(4)+'</span><span>现价:'+r.current_price.toFixed(4)+'</span><span>vsEMA50:'+r.vs_ema50+'</span></div>'+
+                '<div class="ask-box" id="box_'+sym+'">'+
+                '<input type="text" id="inp_'+sym+'" placeholder="问AI..." onkeydown="if(event.key===\'Enter\')askAI(0,\''+sym+'\')">'+
+                '<button onclick="askAI(0,\''+sym+'\')">提问</button>'+
+                '<div class="answer" id="ans_'+sym+'"></div></div>'+
+                '</div>';
+        }).join('');
+        // 恢复已展开的对话历史(用币种名匹配)
+        setTimeout(()=>{
+            for(let sym in _chatHistory){
+                const ans=document.getElementById('ans_'+sym);
+                if(ans && _chatHistory[sym].length){
+                    renderAccHistory(ans, _chatHistory[sym]);
+                    // 有pending任务则继续轮询
+                    _chatHistory[sym].forEach(h=>{if(h.task_id)pollAccTask(h.task_id,sym,ans,_chatHistory[sym]);});
+                }
+            }
+        },100);
+    }).catch(()=>{});
+}
+
+let _lastOpen=null;
+function toggleAsk(sym){
+    const box=document.getElementById('box_'+sym);
+    if(_lastOpen!==null&&_lastOpen!==sym) document.getElementById('box_'+_lastOpen)?.classList.remove('show');
+    box.classList.toggle('show');
+    if(box.classList.contains('show')){_lastOpen=sym;setTimeout(()=>document.getElementById('inp_'+sym)?.focus(),100);}
+    else _lastOpen=null;
+}
+
+function askAI(i,sym){
+    const inp=document.getElementById('inp_'+sym);const ans=document.getElementById('ans_'+sym);
+    const q=inp.value.trim();if(!q)return;
+    const key=sym;  // 用币种名做key，不依赖排序位置
+    if(!_chatHistory[key])_chatHistory[key]=[];
+    const h=_chatHistory[key];inp.value='';
+    ans.classList.add('show');ans.innerHTML='<p style="color:#8b949e;">已提交，后台分析中...</p>';
+    fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({title:sym+' 吸筹信号 量比>5x',question:q,history:h.slice(-6)})})
+        .then(r=>r.json()).then(d=>{
+            if(d.status==='running'){
+                h.push({q:q,a:'__PENDING__',task_id:d.task_id});saveChatHistory();
+                pollAccTask(d.task_id,key,ans,h);
+            }else if(d.code===0&&d.answer){
+                h.push({q:q,a:d.answer});saveChatHistory();renderAccHistory(ans,h);
+            }else ans.innerHTML='<p style="color:#ff9500;">失败: '+(d.msg||'')+'</p>';
+        }).catch(e=>{ans.innerHTML='<p style="color:#ff9500;">网络错误:'+e.message+'</p>';});
+}
+
+function pollAccTask(taskId,key,ans,history){
+    const check=()=>{
+        fetch('/api/ask/status?id='+taskId).then(r=>r.json()).then(d=>{
+            if(d.status==='done'){
+                const h=history.find(x=>x.task_id===taskId);
+                if(h){h.a=d.answer;delete h.task_id;}
+                saveChatHistory();renderAccHistory(ans,history);
+            }else if(d.status==='error'){
+                const h=history.find(x=>x.task_id===taskId);
+                if(h){h.a='[失败:'+d.msg+']';delete h.task_id;}
+                saveChatHistory();renderAccHistory(ans,history);
+            }else{setTimeout(check,3000);}
+        }).catch(()=>{setTimeout(check,5000);});
+    };
+    setTimeout(check,2000);
+}
+
+function renderAccHistory(ans,history){
+    let html='';
+    history.forEach(h=>{
+        if(h.a==='__PENDING__') html+='<p style="color:#8b949e;font-size:10px;">Q: '+h.q+'</p><p style="color:#8b949e;">⏳ 分析中...</p><hr style="border-color:#30363d;">';
+        else html+='<p style="color:#8b949e;font-size:10px;">Q: '+h.q+'</p><p>'+h.a.replace(/\n/g,'<br>')+'</p><hr style="border-color:#30363d;">';
+    });
+    ans.innerHTML=html;
+}
+
+function triggerScan(){
+    fetch('/api/accumulation?scan=1').then(r=>r.json()).then(d=>{
+        document.getElementById('updated').textContent='扫描已触发，60秒后刷新页面查看结果';
+    }).catch(()=>{});
+}
+refresh();
+</script>
+</body>
+</html>

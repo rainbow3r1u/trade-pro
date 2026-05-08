@@ -42,12 +42,14 @@ FUT_MARGIN = 20                     # 每单保证金 USDT
 FUT_MAX_POSITIONS = 20              # 最大持仓（实际受限于现货）
 FUT_LEVERAGE = 10                   # 杠杆倍数
 FUT_TP_PCT = 50                     # 止盈比例 (%)
-FUT_SL_PCT = 0.02                   # 止损比例 2%
+FUT_SL_PCT = 0.04                   # 止损比例 4%
 FUT_VOL_FILTER = 1_000_000          # 24h最低成交量
 FUT_MIN_RATIO = 1.0                 # 量surge最小倍数
-FUT_MIN_GAIN_PCT = 2.3              # 15m涨幅最小阈值%（网站端已过滤，此处为防御）
+FUT_MAX_RATIO = 2.0                 # 量surge最大倍数（超过=追涨送死）
+FUT_MIN_GAIN_PCT = 0.8              # 15m涨幅下限%
+FUT_MAX_GAIN_PCT = 1.5              # 15m涨幅上限%（超过=追涨）
 FUT_MAX_DAILY_TP = 4                # 日最大止盈次数
-SPOT_EXHAUSTED_THRESHOLD = 15       # VS止盈N次后标记BB耗尽
+SPOT_EXHAUSTED_THRESHOLD = 20       # VS止盈N次后标记BB耗尽
 
 # --- 其他配置 ---
 HOST = os.environ.get('MARKET_HOST', 'http://localhost:5003')
@@ -132,6 +134,32 @@ FUNDING_CACHE = {}          # {symbol: rate}
 FUNDING_LAST_FETCH = 0      # 上次拉取时间戳
 FUNDING_FETCH_INTERVAL = 3600  # 每小时拉一次
 FUNDING_MAX_RATE = 0.0005   # 0.05% 做多成本上限
+
+DEPTH_MIN_BID_ASK_RATIO = 0.7  # 买卖盘比低于0.7跳过（卖盘主导，可能是出货）
+
+def check_depth_filter(symbol: str) -> tuple:
+    """检查买卖盘深度比例。卖盘主导时可能是拉高出货。"""
+    try:
+        resp = requests.get(
+            "https://api.binance.com/api/v3/depth",
+            params={"symbol": symbol, "limit": 20},
+            timeout=5
+        )
+        if resp.status_code != 200:
+            return True, "depth_api_fail"
+        data = resp.json()
+        bids = data.get("bids", [])
+        asks = data.get("asks", [])
+        if not bids or not asks:
+            return True, "no_depth"
+        bid_sum = sum(float(b[0]) * float(b[1]) for b in bids[:10])
+        ask_sum = sum(float(a[0]) * float(a[1]) for a in asks[:10])
+        ratio = bid_sum / ask_sum if ask_sum > 0 else 0
+        if ratio < DEPTH_MIN_BID_ASK_RATIO:
+            return False, f"卖盘主导(bid/ask={ratio:.2f}x)，疑似出货"
+        return True, f"bid/ask={ratio:.2f}x"
+    except Exception:
+        return True, "depth_error"  # 深度挂了不挡交易
 
 FEAR_GREED_VALUE = 50       # 当前值(0-100)，默认50
 FEAR_GREED_LAST_FETCH = 0
@@ -253,6 +281,18 @@ def api_get(endpoint: str) -> dict:
     except Exception as e:
         print(f"[API错误] {endpoint}: {e}")
         return {}
+
+def has_spot_market(symbol: str) -> bool:
+    """检查币种是否有现货市场"""
+    try:
+        resp = requests.get(
+            "https://api.binance.com/api/v3/ticker/price",
+            params={"symbol": symbol}, timeout=5
+        )
+        return resp.status_code == 200
+    except:
+        return False
+
 
 def get_current_price(symbol: str) -> float:
     # 先试现货
@@ -428,6 +468,8 @@ def calculate_bb_lower_band(closes: list, period: int = 30, std_mult: float = 2.
 def calculate_pnl(entry_price: float, current_price: float, quantity: float) -> float:
     return (current_price - entry_price) * quantity
 
+last_daily_close_check = 0.0  # 日线收盘检测时间戳
+
 # ========== 现货策略 ==========
 
 def get_bb_climb_signals() -> list:
@@ -593,15 +635,21 @@ def check_spot_positions():
             positions_to_close.append((pos, "STOP_LOSS", current_price, pnl))
             continue
 
-    # BB信号消失检测（阴线踢出）
-    if spot_positions and not positions_to_close:
-        bb_signal_symbols = {s.get("symbol") for s in get_bb_climb_signals()}
-        for pos in spot_positions:
-            if pos["symbol"] not in bb_signal_symbols:
-                current_price = get_current_price(pos["symbol"])
-                if current_price > 0:
-                    pnl = calculate_pnl(pos["entry_price"], current_price, pos["quantity"])
-                    positions_to_close.append((pos, "BB_SIGNAL_LOST", current_price, pnl))
+    # 日线收阴检测：只看已完成日线，不是60秒检测
+    global last_daily_close_check
+    if spot_positions and not positions_to_close and time.time() - last_daily_close_check > 60:
+        last_daily_close_check = time.time()
+        for pos in list(spot_positions):
+            sym = pos["symbol"]
+            kls = get_daily_klines(sym, 3)
+            if kls and len(kls) >= 2:
+                completed = kls[-2]  # 最近已完成的日线
+                # Binance API返回list格式: [ts, o, h, l, c, v, ...]
+                if float(completed[4]) < float(completed[1]):  # 阴线: close < open
+                    current_price = get_current_price(sym)
+                    if current_price > 0:
+                        pnl = calculate_pnl(pos["entry_price"], current_price, pos["quantity"])
+                        positions_to_close.append((pos, "BEARISH_CLOSE", current_price, pnl))
 
     for pos, reason, price, pnl in positions_to_close:
         close_spot_position(pos, reason, price, pnl)
@@ -612,14 +660,27 @@ def evaluate_spot_signals():
     
     for sig in signals:
         symbol = sig.get("symbol", "")
+        signal_detail = {}
 
         if symbol in EXCLUDE_SYMBOLS or symbol in exhausted_symbols:
             continue
-        if get_spot_position(symbol):
+        if get_spot_position(symbol) or get_cc_anchor(symbol):
             continue
         adjusted_max = get_risk_adjusted_max_positions()
-        if get_spot_positions_count() >= adjusted_max:
+        total_anchors = get_spot_positions_count() + get_cc_anchor_count()
+        if total_anchors >= max(adjusted_max, CC_ANCHOR_MAX):
             break
+
+        # 合约专属币种(无现货)走CC锚通道
+        if not has_spot_market(symbol):
+            if get_cc_anchor_count() >= CC_ANCHOR_MAX:
+                continue
+            entry_price = get_current_price(symbol)
+            if entry_price <= 0:
+                continue
+            open_cc_anchor(symbol, entry_price, {"source": "BB", **signal_detail})
+            continue
+
         if spot_account["balance"] < SPOT_PER_TRADE:
             break
 
@@ -764,7 +825,7 @@ def get_vol_surge_signals() -> list:
     data = api_get("/api/vol_surge")
     signals = data.get("data", [])
     now = time.time()
-    return [s for s in signals if s.get("ratio", 0) >= FUT_MIN_RATIO and now - s.get("start_time", 0) < 300]
+    return [s for s in signals if FUT_MIN_RATIO <= s.get("ratio", 0) <= FUT_MAX_RATIO and now - s.get("start_time", 0) < 300]
 
 def get_futures_position(symbol: str):
     """查找合约持仓（支持现货symbol名自动映射）"""
@@ -801,6 +862,12 @@ def open_futures_position(symbol: str, signal_type: str, entry_price: float,
     # 风险层：BTC ETF昨日流出 → 禁止VS
     if not check_etf_flow():
         print(f"[合约跳过] {symbol} BTC ETF昨日净流出 ${abs(ETF_BTC_FLOW):.0f}M，暂停VS交易")
+        return False
+
+    # 验证层：深度检查（买卖盘比）
+    depth_ok, depth_reason = check_depth_filter(symbol)
+    if not depth_ok:
+        print(f"[合约跳过] {symbol} {depth_reason}")
         return False
 
     # 验证层：资金费率过滤
@@ -1030,7 +1097,7 @@ def evaluate_futures_signals():
         if symbol in exhausted_symbols:
             continue
         ratio = sig.get("ratio", 0)
-        if ratio < FUT_MIN_RATIO:
+        if ratio < FUT_MIN_RATIO or ratio > FUT_MAX_RATIO:
             continue
         vol_24h = get_24h_volume(symbol)
         if vol_24h < FUT_VOL_FILTER:

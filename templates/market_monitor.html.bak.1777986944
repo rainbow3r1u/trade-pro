@@ -1,0 +1,1712 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>全量行情监控</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: Arial; margin: 10px; background: #1a1a2e; color: #eee; font-size: 14px; }
+        h1 { color: #00d4ff; font-size: 18px; margin: 10px 0; }
+        .info { color: #888; margin-bottom: 10px; font-size: 12px; }
+        .filter-bar { margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
+        .filter-bar button {
+            background: #16213e; color: #888; border: 1px solid #333;
+            padding: 6px 10px; cursor: pointer; border-radius: 4px; font-size: 12px;
+        }
+        .filter-bar button.active { background: #00d4ff; color: #1a1a2e; }
+        .filter-bar button:hover { border-color: #00d4ff; }
+
+        /* 大单追踪面板 */
+        .surge-panel {
+            background: #16213e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 15px;
+        }
+        .surge-panel h2 {
+            color: #ff9500;
+            font-size: 14px;
+            margin: 0 0 10px 0;
+            cursor: pointer;
+            user-select: none;
+        }
+        .surge-panel h2:hover { color: #ffaa44; }
+        .surge-panel .toggle-icon {
+            font-size: 10px;
+            margin-left: 6px;
+            transition: transform 0.2s;
+        }
+        .surge-panel.collapsed .surge-grid { display: none; }
+        .surge-panel.collapsed .toggle-icon { transform: rotate(-90deg); }
+        .surge-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 8px;
+        }
+        .surge-item {
+            background: #1a1a2e;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 8px 10px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .surge-item:hover { border-color: #ff9500; }
+        .surge-item .sym { color: #00d4ff; font-weight: bold; font-size: 13px; }
+        .surge-item .delta { color: #fff; font-size: 12px; margin-top: 4px; }
+        .surge-item .delta span { color: #aaa; }
+        .surge-item .ratio { font-size: 11px; margin-top: 2px; }
+        .surge-item .ratio .buy { color: #00ff88; }
+        .surge-item .ratio .sell { color: #ff4757; }
+        .surge-empty { color: #555; font-size: 12px; padding: 10px; text-align: center; }
+
+        /* 实盘交易面板 */
+        .sim-trade-panel {
+            background: #16213e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 15px;
+        }
+        .sim-trade-panel h2 {
+            color: #00ff88;
+            font-size: 14px;
+            margin: 0 0 10px 0;
+            cursor: pointer;
+            user-select: none;
+        }
+        .sim-trade-panel h2:hover { color: #55ffaa; }
+        .sim-trade-panel .toggle-icon {
+            font-size: 10px;
+            margin-left: 6px;
+            transition: transform 0.2s;
+        }
+        .sim-trade-panel.collapsed .sim-trade-content { display: none; }
+        .sim-trade-panel.collapsed .toggle-icon { transform: rotate(-90deg); }
+        .sim-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .sim-stat-item {
+            background: #1a1a2e;
+            border-radius: 6px;
+            padding: 8px 10px;
+            text-align: center;
+        }
+        .sim-stat-item .label { color: #888; font-size: 11px; }
+        .sim-stat-item .value { color: #fff; font-size: 14px; font-weight: bold; margin-top: 4px; }
+        .sim-stat-item .value.up { color: #00ff88; }
+        .sim-stat-item .value.down { color: #ff4757; }
+        #sim_positions_wrap, #spot_positions_wrap, #futures_positions_wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        .sim-positions-table {
+            width: 100%;
+            min-width: 420px;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .sim-positions-table th {
+            background: #0d0d1a;
+            color: #888;
+            padding: 6px 4px;
+            text-align: right;
+            font-weight: normal;
+        }
+        .sim-positions-table th:first-child { text-align: left; }
+        .sim-positions-table td {
+            padding: 6px 4px;
+            border-top: 1px solid #333;
+            text-align: right;
+            vertical-align: top;
+        }
+        .sim-positions-table td:first-child { text-align: left; }
+        .sim-positions-table .sym { color: #00d4ff; font-weight: bold; }
+        .sim-positions-table .sig { color: #888; font-size: 10px; }
+        .sim-positions-table .pnl-up { color: #00ff88; }
+        .sim-positions-table .pnl-down { color: #ff4757; }
+        .sim-positions-table .status-profit { color: #00ff88; }
+        .sim-positions-table .status-loss { color: #ff4757; }
+        .sim-positions-table .status-liquidation { color: #ff0000; font-weight: bold; }
+        .sim-positions-table .status-hold { color: #ffd93d; }
+        .sim-empty { color: #555; text-align: center; padding: 15px; }
+        /* 折叠详情行 */
+        .sim-detail-row { display: none; }
+        .sim-detail-row.show { display: table-row; }
+        .sim-detail-row td {
+            background: #0d0d1a;
+            padding: 8px 4px;
+            font-size: 11px;
+            color: #888;
+            text-align: left;
+        }
+        /* 默认手机端：详情项纵向排列 */
+        .sim-detail-row td .detail-item {
+            display: block;
+            margin-right: 0;
+            margin-bottom: 3px;
+            width: 100%;
+            white-space: normal;
+            line-height: 1.4;
+        }
+        /* 桌面端：详情项横向排列 */
+        @media (min-width: 601px) {
+            .sim-detail-row td .detail-item {
+                display: inline-block;
+                margin-right: 16px;
+                margin-bottom: 4px;
+                width: auto;
+                white-space: nowrap;
+            }
+        }
+        /* 手机适配 */
+        @media (max-width: 600px) {
+            .sim-trade-panel { padding: 8px; margin-bottom: 10px; }
+            .sim-trade-panel h2 { font-size: 13px; }
+            .sim-stats { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+            .sim-stat-item { padding: 6px 4px; }
+            .sim-stat-item .label { font-size: 10px; }
+            .sim-stat-item .value { font-size: 12px; }
+            .sim-positions-table { font-size: 11px; min-width: 360px; }
+            .sim-positions-table th, .sim-positions-table td { padding: 5px 3px; }
+            .sim-positions-table .sig { font-size: 9px; }
+            .sim-detail-row td { font-size: 10px; padding: 6px 4px; }
+            .sim-expand-btn { font-size: 9px; margin-right: 2px; }
+        }
+        .sim-detail-row td .detail-label { color: #666; }
+        .sim-detail-row td .detail-value { color: #ccc; }
+        .sim-expand-btn {
+            cursor: pointer;
+            color: #666;
+            font-size: 10px;
+            margin-right: 4px;
+            user-select: none;
+        }
+        .sim-expand-btn:hover { color: #00d4ff; }
+
+        /* 候选蓄力卡片 */
+        .candidate-item {
+            background: #1a1a2e;
+            border: 1px solid #c07800;
+            border-radius: 6px;
+            padding: 8px 10px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .candidate-item:hover { border-color: #e8a020; }
+        .candidate-item .sym { color: #e8a020; font-weight: bold; font-size: 13px; }
+        .candidate-item .delta { color: #fff; font-size: 12px; margin-top: 4px; }
+        .candidate-item .delta span { color: #aaa; }
+
+        /* 主表格 */
+        .table-wrap { overflow-x: auto; }
+        table { border-collapse: collapse; width: 100%; min-width: 600px; }
+        th { background: #16213e; position: sticky; top: 0; font-size: 12px; }
+        th, td { padding: 8px 4px; border: 1px solid #333; text-align: right; white-space: nowrap; }
+        th:first-child, td:first-child { text-align: center; width: 40px; }
+        td:nth-child(2) { max-width: 70px; overflow: hidden; text-overflow: ellipsis; }
+        td:nth-child(5), td:nth-child(6) { max-width: 70px; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+        tr:hover { background: #16213e; cursor: pointer; }
+        tr.surge-highlight { background: #2a2a4e; }
+        tr.vol-surge { background: #4a1a1a; border: 2px solid #ff4757; }
+        tr.vol-surge td { font-weight: bold; }
+        tr.vol-surge .surge-badge { 
+            background: #ff4757; 
+            color: #fff; 
+            padding: 2px 6px; 
+            border-radius: 4px; 
+            font-size: 11px; 
+            margin-left: 4px;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .rank { color: #888; }
+        .gain-up { color: #00ff88; }
+        .gain-down { color: #ff4757; }
+        .cat-tag { font-size: 11px; padding: 2px 6px; border-radius: 3px; }
+        .cat-gold { background: #ffd700; color: #000; }
+        .cat-silver { background: #c0c0c0; color: #000; }
+        .cat-stock { background: #4169e1; color: #fff; }
+        .copyable { cursor: pointer; color: #00d4ff; }
+        .copyable:hover { text-decoration: underline; }
+
+        /* 买卖比列 */
+        .buy-col { font-size: 11px; }
+        .buy-indicator {
+            display: inline-block;
+            width: 40px;
+            height: 6px;
+            border-radius: 3px;
+            background: #333;
+            position: relative;
+            vertical-align: middle;
+            margin-right: 4px;
+        }
+        .buy-indicator .fill {
+            position: absolute;
+            left: 0; top: 0; bottom: 0;
+            border-radius: 3px;
+            background: #00ff88;
+        }
+        .buy-indicator .empty {
+            position: absolute;
+            right: 0; top: 0; bottom: 0;
+            background: #ff4757;
+            border-radius: 0 3px 3px 0;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal.show { display: flex; }
+        .modal-content {
+            background: #16213e;
+            border: 1px solid #444;
+            border-radius: 10px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding: 20px;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .modal-header h2 { color: #00d4ff; margin: 0; font-size: 16px; }
+        .modal-close { background: none; border: none; color: #888; font-size: 20px; cursor: pointer; }
+        .modal-close:hover { color: #fff; }
+        .modal-info {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .modal-info .info-item {
+            background: #1a1a2e;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+        }
+        .modal-info .info-item .label { color: #888; }
+        .modal-info .info-item .value { color: #fff; font-weight: bold; }
+        .modal-info .info-item .value.up { color: #00ff88; }
+        .modal-info .info-item .value.down { color: #ff4757; }
+
+        /* 分钟K线图表 */
+        .minute-bars {
+            display: flex;
+            align-items: flex-end;
+            gap: 2px;
+            height: 60px;
+            margin-top: 10px;
+        }
+        .minute-bar {
+            flex: 1;
+            min-width: 4px;
+            border-radius: 2px 2px 0 0;
+            position: relative;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+        }
+        .minute-bar .bar-fill {
+            width: 100%;
+            border-radius: 2px 2px 0 0;
+            min-height: 2px;
+        }
+        .minute-bar.buy .bar-fill { background: #00ff88; }
+        .minute-bar.sell .bar-fill { background: #ff4757; }
+        .minute-bar.neutral .bar-fill { background: #888; }
+        .minute-bar:hover { opacity: 0.8; }
+        .minute-bar .tooltip {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #000;
+            color: #fff;
+            padding: 4px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            white-space: nowrap;
+            z-index: 10;
+        }
+        .minute-bar:hover .tooltip { display: block; }
+
+        .minute-legend {
+            display: flex;
+            gap: 15px;
+            font-size: 11px;
+            color: #888;
+            margin-top: 8px;
+        }
+        .minute-legend span { display: flex; align-items: center; gap: 4px; }
+        .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+        .legend-dot.buy { background: #00ff88; }
+        .legend-dot.sell { background: #ff4757; }
+        .legend-dot.neutral { background: #888; }
+    </style>
+</head>
+<body>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <h1 style="margin:0;">📊 全量行情监控</h1>
+        <a href="/momentum" style="color:#ff9500;text-decoration:none;font-size:13px;padding:6px 12px;border:1px solid #ff9500;border-radius:4px;">📈 追涨追踪器 →</a>
+        <a href="/params" style="color:#58a6ff;text-decoration:none;font-size:13px;padding:6px 12px;border:1px solid #58a6ff;border-radius:4px;">⚙️ 参数面板 →</a>
+        <a href="/backtest" style="color:#3fb950;text-decoration:none;font-size:13px;padding:6px 12px;border:1px solid #3fb950;border-radius:4px;">🔬 回测引擎 →</a>
+    </div>
+    <div class="info">
+        共 <span id="count">0</span> 个USDT永续合约 | 
+        WebSocket: <span id="ws_status">连接中...</span> |
+        最后更新: <span id="updated">-</span>
+    </div>
+
+    <!-- V7 双账户面板: 现货 + 合约 -->
+    <!-- 现货账户 -->
+    <div class="sim-trade-panel" id="spot_panel" style="border-color: #00ff88;">
+        <h2 class="collapsible" onclick="togglePanel('spot_content')" style="color: #00ff88;">📦 现货账户 (V7 BB策略)<span class="toggle-icon">▼</span></h2>
+        <div class="sim-trade-content" id="spot_content">
+            <div class="sim-stats" id="spot_stats">
+                <div class="sim-stat-item">
+                    <div class="label">权益</div>
+                    <div class="value" id="spot_equity">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">余额</div>
+                    <div class="value" id="spot_balance">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">未实现盈亏</div>
+                    <div class="value" id="spot_unrealized">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">胜率</div>
+                    <div class="value" id="spot_win_rate">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">最大回撤</div>
+                    <div class="value" id="spot_max_dd">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">持仓/最大</div>
+                    <div class="value" id="spot_positions_count">-</div>
+                </div>
+            </div>
+            <div id="spot_positions_wrap">
+                <div class="sim-empty">加载中...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 合约账户 -->
+    <div class="sim-trade-panel" id="futures_panel" style="border-color: #ff4757;">
+        <h2 class="collapsible" onclick="togglePanel('futures_content')" style="color: #ff4757;">🔥 合约账户 (V7 VS策略)<span class="toggle-icon">▼</span></h2>
+        <div class="sim-trade-content" id="futures_content">
+            <div class="sim-stats" id="futures_stats">
+                <div class="sim-stat-item">
+                    <div class="label">权益</div>
+                    <div class="value" id="futures_equity">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">余额</div>
+                    <div class="value" id="futures_balance">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">未实现盈亏</div>
+                    <div class="value" id="futures_unrealized">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">胜率</div>
+                    <div class="value" id="futures_win_rate">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">最大回撤</div>
+                    <div class="value" id="futures_max_dd">-</div>
+                </div>
+                <div class="sim-stat-item">
+                    <div class="label">持仓/最大</div>
+                    <div class="value" id="futures_positions_count">-</div>
+                </div>
+            </div>
+            <div id="futures_positions_wrap">
+                <div class="sim-empty">加载中...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 大单追踪面板 -->
+    <div class="surge-panel" id="surge_panel" style="display:none">
+        <h2 class="collapsible" onclick="togglePanel('surge_grid')">🔥 大单追踪（delta_q &gt; 50万/秒）<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="surge_grid">
+            <div class="surge-empty">加载中...</div>
+        </div>
+    </div>
+
+    <!-- 15分钟成交量突增面板 -->
+    <div class="surge-panel" id="vol_surge_panel" style="display:none">
+        <h2 class="collapsible" onclick="togglePanel('vol_surge_grid')" style="color: #ff4757;">🔥 15分钟成交量突增（&gt;3.0倍，最近1小时）<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="vol_surge_grid">
+            <div class="surge-empty">暂无突增</div>
+        </div>
+    </div>
+
+    <!-- 复活赛队列 -->
+    <div class="surge-panel" id="res_panel" style="margin-top:10px; border-color: #a371f7;">
+        <h2 class="collapsible" onclick="togglePanel('res_grid')" style="color: #a371f7;">🔄 复活赛队列（等反包）<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="res_grid">
+            <div class="surge-empty">加载中...</div>
+        </div>
+    </div>
+
+    <!-- CC锚持仓 -->
+    <div class="surge-panel" id="cc_anchor_panel" style="margin-top:10px; border-color: #3fb950;">
+        <h2 class="collapsible" onclick="togglePanel('cc_anchor_grid')" style="color: #3fb950;">📌 CC锚持仓<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="cc_anchor_grid">
+            <div class="surge-empty">加载中...</div>
+        </div>
+    </div>
+
+    <!-- CC爆发检测面板 -->
+    <div class="surge-panel" id="cc_panel" style="margin-top:10px; border-color: #d2991d;">
+        <h2 class="collapsible" onclick="togglePanel('cc_grid')" style="color: #ff9500;">🚀 CC爆发信号（连续大阳线+放量）<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="cc_grid">
+            <div class="surge-empty">加载中...</div>
+        </div>
+    </div>
+
+    <!-- BTC ETF 流量 -->
+    <div class="surge-panel" id="etf_panel" style="margin-top:10px; border-color: #58a6ff;">
+        <h2 class="collapsible" onclick="togglePanel('etf_grid')" style="color: #58a6ff;">📊 BTC/ETH ETF 每日净流入 (数据源: Farside)<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="etf_grid">
+            <div style="text-align:center;padding:10px;">
+                <img src="/static/etf_flow_chart.png" style="max-width:100%;border-radius:6px;" alt="ETF Flow Chart">
+            </div>
+        </div>
+    </div>
+
+    <!-- 布林爬坡预警面板 -->
+    <div class="surge-panel" id="climb_panel" style="display:none">
+        <h2 class="collapsible" onclick="togglePanel('climb_grid')">📈 布林爬坡预警（贴着布林上轨连续3小时buy_ratio&gt;55%）<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="climb_grid">
+            <div class="surge-empty">暂无信号（需等待数据积累）</div>
+        </div>
+    </div>
+
+    <!-- 布林候选蓄力面板 -->
+    <div class="surge-panel" id="candidate_panel" style="display:none">
+        <h2 class="collapsible" onclick="togglePanel('candidate_grid')" style="color: #e8a020;">🔶 布林候选蓄力（爬坡断后在上轨附近蓄力≥3小时）<span class="toggle-icon">▼</span></h2>
+        <div class="surge-grid" id="candidate_grid">
+            <div class="surge-empty">暂无候选</div>
+        </div>
+    </div>
+
+    <!-- 策略回溯面板 -->
+    <div class="surge-panel" id="backtest_panel" style="display:none">
+        <h2 class="collapsible" onclick="togglePanel('backtest_content')" style="color: #9b59b6;">🔬 策略回溯测试<span class="toggle-icon">▼</span></h2>
+        <div id="backtest_content" style="padding: 12px;">
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
+                <div>
+                    <label style="color: #888; font-size: 12px;">币种:</label><br>
+                    <input type="text" id="backtest_symbol" placeholder="HIGHUSDT" style="background: #1a1a2e; border: 1px solid #333; color: #eee; padding: 5px 10px; border-radius: 4px; width: 120px;">
+                </div>
+                <div>
+                    <label style="color: #888; font-size: 12px;">开始时间:</label><br>
+                    <input type="text" id="backtest_start" placeholder="2026-04-17 00:00:00" style="background: #1a1a2e; border: 1px solid #333; color: #eee; padding: 5px 10px; border-radius: 4px; width: 150px;">
+                </div>
+                <div>
+                    <label style="color: #888; font-size: 12px;">结束时间:</label><br>
+                    <input type="text" id="backtest_end" placeholder="2026-04-19 00:00:00" style="background: #1a1a2e; border: 1px solid #333; color: #eee; padding: 5px 10px; border-radius: 4px; width: 150px;">
+                </div>
+                <div>
+                    <label style="color: #888; font-size: 12px;">策略:</label><br>
+                    <select id="backtest_strategy" style="background: #1a1a2e; border: 1px solid #333; color: #eee; padding: 5px 10px; border-radius: 4px;">
+                        <option value="bollinger_climb">布林爬坡</option>
+                        <option value="bollinger_candidate">候选蓄力</option>
+                    </select>
+                </div>
+                <div style="display: flex; align-items: flex-end;">
+                    <button onclick="runBacktest()" style="background: #9b59b6; border: none; color: #fff; padding: 6px 14px; border-radius: 4px; cursor: pointer;">开始回溯</button>
+                </div>
+            </div>
+            <div id="backtest_result" style="display: none;">
+                <div style="background: #1a1a2e; border-radius: 6px; padding: 10px; margin-top: 10px;">
+                    <div id="backtest_summary" style="color: #888; font-size: 12px; margin-bottom: 10px;"></div>
+                    <div id="backtest_signals" style="max-height: 300px; overflow-y: auto;"></div>
+                </div>
+            </div>
+            
+            <!-- 调试面板 -->
+            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #333;">
+                <div style="color: #888; font-size: 13px; margin-bottom: 8px;">🔍 调试指定时间点</div>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end;">
+                    <div>
+                        <label style="color: #666; font-size: 11px;">币种:</label><br>
+                        <input type="text" id="debug_symbol" placeholder="HIGHUSDT" style="background: #0d0d1a; border: 1px solid #444; color: #eee; padding: 4px 8px; border-radius: 3px; width: 100px; font-size: 12px;">
+                    </div>
+                    <div>
+                        <label style="color: #666; font-size: 11px;">时间点:</label><br>
+                        <input type="text" id="debug_timestamp" placeholder="2026-04-18 05:00:00" style="background: #0d0d1a; border: 1px solid #444; color: #eee; padding: 4px 8px; border-radius: 3px; width: 140px; font-size: 12px;">
+                    </div>
+                    <div style="display: flex; align-items: flex-end;">
+                        <button onclick="debugTimestamp()" style="background: #2c3e50; border: none; color: #fff; padding: 4px 12px; border-radius: 3px; cursor: pointer; font-size: 12px;">调试</button>
+                    </div>
+                </div>
+                <div id="debug_result" style="display: none; margin-top: 10px;">
+                    <div style="background: #0d0d1a; border-radius: 4px; padding: 10px;">
+                        <div id="debug_summary" style="font-size: 13px; margin-bottom: 10px;"></div>
+                        <div id="debug_conditions" style="font-size: 11px;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="filter-bar">
+        <button class="active" data-filter="all">全部</button>
+        <button data-filter="crypto">仅加密货币</button>
+        <button data-filter="metal">贵金属</button>
+        <button data-filter="stock">美股</button>
+    </div>
+    <div class="table-wrap">
+    <table>
+        <thead id="thead">
+            <tr id="header-row">
+                <th>排名</th>
+                <th>币种</th>
+                <th>名称</th>
+                <th>分类</th>
+                <th>价格 (USDT)</th>
+                <th>24h成交额</th>
+                <th>涨跌幅</th>
+                <th>多空比</th>
+            </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+    </table>
+    </div>
+
+    <!-- 详情Modal -->
+    <div class="modal" id="detail_modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal_title">币种详情</h2>
+                <button class="modal-close" onclick="closeModal()">×</button>
+            </div>
+            <div class="modal-info" id="modal_info"></div>
+            <div class="minute-legend">
+                <span><div class="legend-dot buy"></div> 买方主导 (buy_ratio &gt; 0.55)</span>
+                <span><div class="legend-dot sell"></div> 卖方主导 (buy_ratio &lt; 0.45)</span>
+                <span><div class="legend-dot neutral"></div> 多空均衡</span>
+            </div>
+            <div class="minute-bars" id="minute_bars"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        // 面板折叠功能
+        function togglePanel(gridId) {
+            const panel = document.getElementById(gridId).parentElement;
+            panel.classList.toggle('collapsed');
+        }
+
+        const tbody = document.getElementById('tbody');
+        const countEl = document.getElementById('count');
+        const wsStatus = document.getElementById('ws_status');
+        const updatedEl = document.getElementById('updated');
+        const surgeGrid = document.getElementById('surge_grid');
+        let allData = {};
+        let surgeData = [];
+        let currentFilter = 'all';
+        let socket = io();
+
+        // WebSocket连接状态
+        socket.on('connect', () => {
+            console.log('Socket.IO 已连接');
+            wsStatus.textContent = '已连接';
+        });
+        socket.on('disconnect', () => {
+            console.log('Socket.IO 断开');
+            wsStatus.textContent = '断开';
+        });
+        socket.on('connect_error', (error) => {
+            console.log('Socket.IO 连接错误:', error);
+            wsStatus.textContent = '错误';
+        });
+        socket.on('error', () => {
+            console.log('Socket.IO 错误');
+            wsStatus.textContent = '错误';
+        });
+
+        // 初始化数据
+        socket.on('init_data', (res) => {
+            allData = {};
+            res.data.forEach(row => allData[row.symbol] = row);
+            render();
+            countEl.textContent = res.count;
+            updatedEl.textContent = new Date().toLocaleTimeString();
+        });
+
+        // 实盘交易实时更新
+        socket.on('sim_trade_update', (state) => {
+            renderSimTrade(state);
+        });
+
+        // 兜底：定时从API拉取全量数据（websocket万一不触发也能刷新）
+        function pollSnapshot() {
+            fetch('/api/snapshot')
+                .then(r => r.json())
+                .then(res => {
+                    if (res.data && res.data.length > 0) {
+                        const newData = {};
+                        res.data.forEach(row => newData[row.symbol] = row);
+                        allData = newData;
+                        render();
+                        countEl.textContent = res.count;
+                        updatedEl.textContent = new Date().toLocaleTimeString();
+                    }
+                })
+                .catch(() => {});
+        }
+        setInterval(pollSnapshot, 3000);
+
+        // 实时更新（节流渲染，避免高频 DOM 重绘）
+        let _renderPending = false;
+        let _renderTimeout = null;
+        const RENDER_THROTTLE_MS = 200;  // 最多每200ms重绘一次
+        
+        function scheduleRender() {
+            if (_renderTimeout) return;
+            _renderTimeout = setTimeout(() => {
+                _renderTimeout = null;
+                render();
+            }, RENDER_THROTTLE_MS);
+        }
+        
+        socket.on('ws_update', (res) => {
+            res.data.forEach(item => {
+                if (allData[item.symbol]) {
+                    allData[item.symbol].price = item.price;
+                    allData[item.symbol].q = item.q;
+                    const o = allData[item.symbol].o;
+                    if (o > 0) {
+                        allData[item.symbol].gain_pct = Math.round((item.price - o) / o * 10000) / 100;
+                    }
+                } else {
+                    // 币种不在allData中，补充基本信息
+                    allData[item.symbol] = {
+                        symbol: item.symbol,
+                        price: item.price,
+                        q: item.q,
+                        o: 0,
+                        gain_pct: 0,
+                        vol_15m: 0,
+                        vol_15m_current: 0,
+                        is_surge: false,
+                        surge_ratio: 0
+                    };
+                }
+            });
+            scheduleRender();
+            updatedEl.textContent = new Date().toLocaleTimeString();
+            
+            // 秒级刷新实盘交易盈亏（用最新价格实时计算，无需等后端推送）
+            updateSimTradeRealtime();
+        });
+
+        // 轮询大单数据
+        function loadSurge() {
+            fetch('/api/surge')
+                .then(r => r.json())
+                .then(res => {
+                    if (res.code === 0 && res.data.length > 0) {
+                        surgeData = res.data;
+                        renderSurge();
+                    }
+                })
+                .catch(() => {});
+        }
+        setInterval(loadSurge, 5000);
+        loadSurge();
+
+        // 15分钟成交量突增
+        let volSurgeData = [];
+        function loadVolSurge() {
+            fetch('/api/vol_surge')
+                .then(r => r.json())
+                .then(res => {
+                    if (res.code === 0) {
+                        volSurgeData = res.data || [];
+                        renderVolSurge();
+                    }
+                })
+                .catch(() => {});
+        }
+        setInterval(loadVolSurge, 10000);  // 每10秒更新
+        loadVolSurge();
+
+        // CC锚持仓
+        let ccAnchorList = [];
+        function loadCCAnchors() {
+            fetch('/api/cc_anchors').then(r => r.json()).then(res => {
+                ccAnchorList = res.data || [];
+                const grid = document.getElementById('cc_anchor_grid');
+                if (ccAnchorList.length === 0) { grid.innerHTML = '<div class="surge-empty">无CC锚持仓</div>'; return; }
+                grid.innerHTML = ccAnchorList.map(a => {
+                    return '<div class="surge-item" style="border-color:#3fb950;background:#0d1a10;">'+
+                        '<div class="delta"><span>币种:</span> <span style="color:#3fb950;font-weight:700;">'+a.symbol+'</span></div>'+
+                        '<div class="delta"><span>入场:</span> '+a.entry_price.toFixed(6)+'</div>'+
+                        '<div class="delta"><span>TP:</span> '+a.tp_price.toFixed(6)+' | <span>SL:</span> '+a.sl_price.toFixed(6)+'</div>'+
+                        '</div>';
+                }).join('');
+            }).catch(() => {});
+            renderCC();
+        }
+        setInterval(loadCCAnchors, 30000);
+        loadCCAnchors();
+
+        // CC爆发信号
+        let ccData = [];
+        function loadCC() {
+            fetch('/api/cc_signals').then(r => r.json()).then(res => {
+                ccData = res.data || [];
+                renderCC();
+            }).catch(() => {});
+        }
+        setInterval(loadCC, 30000);
+        loadCC();
+
+        // 复活赛队列
+        function loadResurrection() {
+            fetch('/api/resurrection_queue')
+                .then(r => r.json())
+                .then(res => {
+                    const grid = document.getElementById('res_grid');
+                    const queue = res.data || {};
+                    const syms = Object.keys(queue);
+                    if (syms.length === 0) {
+                        grid.innerHTML = '<div class="surge-empty">暂无复活赛币种</div>';
+                        return;
+                    }
+                    grid.innerHTML = syms.map(sym => {
+                        const info = queue[sym];
+                        return '<div class="surge-item" style="border-color:#a371f7;background:#1a0d2e;">'+
+                            '<div class="delta"><span>币种:</span> <span style="color:#a371f7;font-weight:700;">'+sym+'</span></div>'+
+                            '<div class="delta"><span>阴线开:</span> '+info.bearish_o.toFixed(6)+'</div>'+
+                            '<div class="delta"><span>阴线收:</span> '+info.bearish_c.toFixed(6)+'</div>'+
+                            '<div class="delta"><span>等待反包...</span></div>'+
+                            '</div>';
+                    }).join('');
+                })
+                .catch(() => {});
+        }
+        setInterval(loadResurrection, 30000);
+        loadResurrection();
+
+        function renderCC() {
+            const grid = document.getElementById('cc_grid');
+            const anchored = new Set(ccAnchorList.map(a => a.symbol));
+            const newSignals = ccData.filter(s => !anchored.has(s.symbol));
+            if (newSignals.length === 0) { grid.innerHTML = '<div class="surge-empty">无新CC信号</div>'; return; }
+            grid.innerHTML = newSignals.map(s => {
+                return '<div class="surge-item" style="border-color:#d2991d;background:#1a1408;">'+
+                    '<div class="delta"><span>币种:</span> <span style="color:#ff9500;font-weight:700;">'+s.symbol+'</span></div>'+
+                    '<div class="delta"><span>今日涨幅:</span> <span style="color:#3fb950;font-size:16px;">+'+s.today_gain_pct+'%</span></div>'+
+                    '<div class="delta"><span>连续阳线:</span> '+s.consecutive_days+'天</div>'+
+                    '<div class="delta"><span>爆量>15%:</span> '+s.big_gain_days+'天</div>'+
+                    '</div>';
+            }).join('');
+        }
+
+        function renderVolSurge() {
+            const grid = document.getElementById('vol_surge_grid');
+            if (volSurgeData.length === 0) {
+                grid.innerHTML = '<div class="surge-empty">暂无突增</div>';
+                return;
+            }
+            grid.innerHTML = volSurgeData.map(item => {
+                if (item.tradeable) {
+                    const remainingMin = Math.ceil(item.remaining_seconds / 60);
+                    return `<div class="surge-item" style="border-color: #ff4757;" onclick="openModal('${item.symbol}')">
+                        <div class="sym" style="color: #ff4757;">${item.symbol} <span style="font-size:11px;">🔥${item.ratio}x</span></div>
+                        <div class="delta"><span>15m成交:</span> <span style="color:#ff4757;">${(item.vol_15m / 1e3).toFixed(1)}K</span></div>
+                        <div class="delta"><span>上期:</span> ${(item.last_vol / 1e3).toFixed(1)}K</div>
+                        <div class="delta"><span>剩余:</span> <span style="color:#2ed573;">${remainingMin}分钟</span></div>
+                    </div>`;
+                } else {
+                    const elapsedMin = Math.floor((Date.now() / 1000 - item.start_time) / 60);
+                    return `<div class="surge-item" style="border-color: #888; opacity: 0.7;" onclick="openModal('${item.symbol}')">
+                        <div class="sym" style="color: #888;">${item.symbol} <span style="font-size:11px;">🔥${item.ratio}x</span></div>
+                        <div class="delta"><span>15m成交:</span> ${(item.vol_15m / 1e3).toFixed(1)}K</div>
+                        <div class="delta"><span>上期:</span> ${(item.last_vol / 1e3).toFixed(1)}K</div>
+                        <div class="delta"><span style="color:#888;">已过期 ${elapsedMin}分钟</span></div>
+                    </div>`;
+                }
+            }).join('');
+        }
+
+        // 布林爬坡预警
+        let climbData = [];
+        let candidateData = [];
+        function loadClimb() {
+            fetch('/api/bollinger_climb')
+                .then(r => r.json())
+                .then(res => {
+                    if (res.code === 0) {
+                        climbData = res.data || [];
+                        candidateData = res.candidates || [];
+                        renderClimb();
+                        renderCandidate();
+                    }
+                })
+                .catch(() => {});
+        }
+        setInterval(loadClimb, 30000);  // 每30秒检查一次（数据积累慢）
+        loadClimb();
+
+        function renderClimb() {
+            const grid = document.getElementById('climb_grid');
+            if (climbData.length === 0) {
+                grid.innerHTML = '<div class="surge-empty">暂无信号</div>';
+                return;
+            }
+            grid.innerHTML = climbData.map(item => {
+                const lastHour = item.valid_hours[item.valid_hours.length - 1];
+                const buyPct = Math.round(lastHour.buy_ratio * 100);
+                const timeStr = new Date(lastHour.t * 1000).toLocaleTimeString('zh-CN', {hour: '2-digit', minute:'2-digit'});
+                return `<div class="surge-item" onclick="openModal('${item.symbol}')">
+                    <div class="sym">${item.symbol}</div>
+                    <div class="delta"><span>连续:</span> ${item.consecutive_hours}小时</div>
+                    <div class="delta"><span>上轨:</span> ${item.upper.toFixed(4)}</div>
+                    <div class="delta"><span>最新价:</span> ${lastHour.c.toFixed(4)}</div>
+                    <div class="ratio"><span class="${buyPct > 55 ? 'buy' : 'sell'}">买入${buyPct}%</span></div>
+                    <div class="delta" style="color:#888;font-size:10px;">${timeStr}</div>
+                </div>`;
+            }).join('');
+        }
+
+        function renderCandidate() {
+            const grid = document.getElementById('candidate_grid');
+            if (candidateData.length === 0) {
+                grid.innerHTML = '<div class="surge-empty">暂无候选</div>';
+                return;
+            }
+            grid.innerHTML = candidateData.map(item => {
+                const lastHour = item.candidate_hours[item.candidate_hours.length - 1];
+                const timeStr = new Date(lastHour.t * 1000).toLocaleTimeString('zh-CN', {hour: '2-digit', minute:'2-digit'});
+                return `<div class="candidate-item" onclick="openModal('${item.symbol}')">
+                    <div class="sym">${item.symbol}</div>
+                    <div class="delta"><span>蓄力:</span> ${item.consecutive_hours}小时</div>
+                    <div class="delta"><span>上轨:</span> ${item.upper.toFixed(4)}</div>
+                    <div class="delta"><span>最新价:</span> ${lastHour.c.toFixed(4)}</div>
+                    <div class="delta" style="color:#c07800;font-size:10px;">${timeStr}</div>
+                </div>`;
+            }).join('');
+        }
+
+        // 渲染大单面板
+        function renderSurge() {
+            if (surgeData.length === 0) {
+                surgeGrid.innerHTML = '<div class="surge-empty">暂无大单</div>';
+                return;
+            }
+            surgeGrid.innerHTML = surgeData.map(item => {
+                const buyPct = Math.round(item.avg_buy_ratio * 100);
+                const sellPct = 100 - buyPct;
+                const timeAgo = Math.round((Date.now() / 1000 - item.last_t) / 60);
+                return `<div class="surge-item" onclick="openModal('${item.symbol}')">
+                    <div class="sym">${item.symbol}</div>
+                    <div class="delta"><span>delta:</span> ${(item.total_delta_q / 1e6).toFixed(2)}M</div>
+                    <div class="ratio">
+                        <span class="buy">买${buyPct}%</span> / <span class="sell">卖${sellPct}%</span>
+                    </div>
+                    <div class="delta" style="font-size:10px;color:#666">${timeAgo}分钟前</div>
+                </div>`;
+            }).join('');
+        }
+
+        // 打开Modal
+        function openModal(symbol) {
+            document.getElementById('detail_modal').classList.add('show');
+            document.getElementById('modal_title').textContent = symbol;
+            document.getElementById('modal_info').innerHTML = '<div class="info-item" style="color:#888">加载中...</div>';
+            document.getElementById('minute_bars').innerHTML = '';
+
+            // 获取基本信息
+            const info = allData[symbol] || {};
+            const gain = info.gain_pct || 0;
+            const gainClass = gain >= 0 ? 'up' : 'down';
+
+            // 获取分钟数据
+            fetch(`/api/minute_buy_ratio/${symbol}`)
+                .then(r => r.json())
+                .then(res => {
+                    if (res.code === 0 && res.data.length > 0) {
+                        renderModal(symbol, info, res.data);
+                    } else {
+                        document.getElementById('modal_info').innerHTML = '<div class="info-item" style="color:#888">暂无分钟数据</div>';
+                    }
+                })
+                .catch(() => {
+                    document.getElementById('modal_info').innerHTML = '<div class="info-item" style="color:#888">加载失败</div>';
+                });
+        }
+
+        function renderModal(symbol, info, minuteData) {
+            // 基本信息
+            const gain = info.gain_pct || 0;
+            const gainSign = gain >= 0 ? '+' : '';
+            document.getElementById('modal_info').innerHTML = `
+                <div class="info-item">
+                    <div class="label">价格</div>
+                    <div class="value">${info.price?.toFixed(4) || '-'} USDT</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">24h涨跌</div>
+                    <div class="value ${gain >= 0 ? 'up' : 'down'}">${gainSign}${gain}%</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">24h成交额</div>
+                    <div class="value">${info.q ? (info.q / 1e6).toFixed(2) : '-'} M</div>
+                </div>
+                <div class="info-item">
+                    <div class="label">最近${minuteData.length}分钟</div>
+                    <div class="value">买入 ${Math.round(minuteData.reduce((s, m) => s + m.buy_q, 0) / 1e6, 2)}M</div>
+                </div>
+            `;
+
+            // 分钟K线可视化
+            const bars = document.getElementById('minute_bars');
+            const maxQ = Math.max(...minuteData.map(m => m.q));
+            bars.innerHTML = minuteData.slice(-30).map(m => {
+                const buyRatio = m.buy_ratio || 0.5;
+                const heightPct = maxQ > 0 ? (m.q / maxQ * 100) : 5;
+                const cls = buyRatio > 0.55 ? 'buy' : (buyRatio < 0.45 ? 'sell' : 'neutral');
+                const time = new Date(m.t * 1000).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
+                const gainPct = m.gain?.toFixed(1) || '0';
+                return `<div class="minute-bar ${cls}" title="${time}">
+                    <div class="bar-fill" style="height:${heightPct}%"></div>
+                    <div class="tooltip">${time}<br>${(m.q/1e6).toFixed(2)}M<br>买${Math.round(buyRatio*100)}%<br>涨跌${gainPct}%</div>
+                </div>`;
+            }).join('');
+        }
+
+        function closeModal() {
+            document.getElementById('detail_modal').classList.remove('show');
+        }
+
+        // 点击Modal背景关闭
+        document.getElementById('detail_modal').addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+
+        // ESC关闭
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+        // 筛选按钮
+        document.querySelectorAll('.filter-bar button').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.filter-bar button').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentFilter = btn.dataset.filter;
+                render();
+            });
+        });
+
+        function copyText(text, el, e) {
+            if (e) e.preventDefault();
+            const textToCopy = el.dataset.copy || text;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(textToCopy).then(() => {
+                    const orig = el.textContent;
+                    el.textContent = '✓';
+                    setTimeout(() => el.textContent = orig, 600);
+                }).catch(() => { fallbackCopy(textToCopy); });
+            } else {
+                fallbackCopy(textToCopy);
+            }
+        }
+        
+        function fallbackCopy(text) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            alert('已复制: ' + text);
+        }
+
+        function getCatClass(cat_type) {
+            if (cat_type === '贵金属') return 'cat-gold';
+            if (cat_type === '美股') return 'cat-stock';
+            return '';
+        }
+
+        function render() {
+            let rows = Object.values(allData);
+            
+            // 筛选
+            if (currentFilter === 'crypto') {
+                rows = rows.filter(r => !r.cat_type);
+            } else if (currentFilter === 'metal') {
+                rows = rows.filter(r => r.cat_type === '贵金属');
+            } else if (currentFilter === 'stock') {
+                rows = rows.filter(r => r.cat_type === '美股');
+            }
+            
+            const showExtra = currentFilter !== 'all';
+            
+            // 更新表头
+            const headerRow = document.getElementById('header-row');
+            if (showExtra) {
+                headerRow.innerHTML = '<th>排名</th><th>币种</th><th>名称</th><th>分类</th><th>价格</th><th>今日成交额</th><th title="前4小时15分钟成交额均值">15m均值</th><th>涨跌幅</th><th>多空比</th>';
+            } else {
+                headerRow.innerHTML = '<th>排名</th><th>币种</th><th>价格</th><th>今日成交额</th><th title="前4小时15分钟成交额均值">15m均值</th><th>涨跌幅</th><th>多空比</th>';
+            }
+            
+            rows.sort((a, b) => b.gain_pct - a.gain_pct);
+            
+            tbody.innerHTML = rows.map((r, i) => {
+                const cls = r.gain_pct >= 0 ? 'gain-up' : 'gain-down';
+                const sign = r.gain_pct >= 0 ? '+' : '';
+                const catHtml = r.cat_name 
+                    ? `<span class="cat-tag ${getCatClass(r.cat_type)}">${r.cat_name}</span>` 
+                    : '';
+                const nameTd = showExtra ? `<td><span class="copyable" data-copy="${r.cat_name || r.symbol}" onclick="copyText('${r.cat_name || r.symbol}', this, event)" title="点击复制">${r.cat_name || '-'}</span></td>` : '';
+                const catTd = showExtra ? `<td>${catHtml}</td>` : '';
+
+                // 检查是否有surge数据
+                const surge = surgeData.find(s => s.symbol === r.symbol);
+                const rowClass = r.is_surge ? 'vol-surge' : (surge ? 'surge-highlight' : '');
+                const buyRatio = surge ? surge.avg_buy_ratio : 0.5;
+                const buyPct = Math.round(buyRatio * 100);
+                const buyColHtml = `<td class="buy-col">
+                    <span class="buy-indicator">
+                        <span class="fill" style="width:${buyPct}%"></span>
+                        <span class="empty" style="width:${100-buyPct}%"></span>
+                    </span>
+                    <span class="${buyRatio > 0.55 ? 'gain-up' : (buyRatio < 0.45 ? 'gain-down' : '')}">${buyPct}</span>
+                </td>`;
+
+                // 15分钟成交额显示（突增时显示倍数）
+                // vol_15m: 前4小时的15分钟均值
+                // vol_15m_current: 当前15分钟成交额
+                const vol15mDisplay = r.vol_15m 
+                    ? (r.is_surge 
+                        ? `<span style="color:#ff4757;">${(r.vol_15m_current / 1e3).toFixed(1)}K</span><span class="surge-badge">🔥${r.surge_ratio}x</span>`
+                        : `${(r.vol_15m / 1e3).toFixed(1)}K`)
+                    : '-';
+
+                return `<tr class="${rowClass}" onclick="openModal('${r.symbol}')">
+                    <td class="rank">${i + 1}</td>
+                    <td><span class="copyable" data-copy="${r.symbol}" onclick="copyText('${r.symbol}', this, event)" title="点击复制">${r.symbol}</span></td>
+                    ${nameTd}
+                    ${catTd}
+                    <td>${r.price.toFixed(4)}</td>
+                    <td>${(r.q / 1e6).toFixed(2)}M</td>
+                    <td>${vol15mDisplay}</td>
+                    <td class="${cls}">${sign}${r.gain_pct}%</td>
+                    ${buyColHtml}
+                </tr>`;
+            }).join('');
+        }
+
+        // ========== 回溯测试功能 ==========
+        function runBacktest() {
+            const symbol = document.getElementById('backtest_symbol').value.trim().toUpperCase();
+            const startTime = document.getElementById('backtest_start').value.trim();
+            const endTime = document.getElementById('backtest_end').value.trim();
+            const strategy = document.getElementById('backtest_strategy').value;
+
+            if (!symbol) {
+                alert('请输入币种');
+                return;
+            }
+            if (!startTime) {
+                alert('请输入开始时间');
+                return;
+            }
+
+            const resultDiv = document.getElementById('backtest_result');
+            const summaryDiv = document.getElementById('backtest_summary');
+            const signalsDiv = document.getElementById('backtest_signals');
+
+            resultDiv.style.display = 'block';
+            summaryDiv.innerHTML = '<span style="color: #9b59b6;">⏳ 回溯测试中...</span>';
+            signalsDiv.innerHTML = '';
+
+            const endpoint = strategy === 'bollinger_climb' ? '/api/backtest/bollinger_climb' : '/api/backtest/bollinger_candidate';
+            
+            fetch(endpoint, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbol: symbol,
+                    start_time: startTime,
+                    end_time: endTime || null
+                })
+            })
+            .then(r => r.json())
+            .then(res => {
+                if (res.code !== 0) {
+                    summaryDiv.innerHTML = `<span style="color: #ff4757;">❌ 错误: ${res.msg}</span>`;
+                    return;
+                }
+
+                const data = res.data;
+                const summary = data.summary || {};
+
+                summaryDiv.innerHTML = `
+                    <span style="color: #00ff88;">✅ 回溯完成</span> | 
+                    币种: <span style="color: #00d4ff;">${data.symbol}</span> | 
+                    时间范围: ${data.start_time} ~ ${data.end_time} | 
+                    信号数: <span style="color: #00ff88; font-weight: bold;">${summary.total_signals || 0}</span> | 
+                    失败检查: <span style="color: #ff4757;">${summary.total_failed_checks || 0}</span> | 
+                    信号频率: ${(summary.signal_frequency || 0).toFixed(4)}/小时
+                `;
+
+                if (data.signals && data.signals.length > 0) {
+                    signalsDiv.innerHTML = `
+                        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                            <thead>
+                                <tr style="background: #16213e;">
+                                    <th style="padding: 6px; text-align: left; border-bottom: 1px solid #333;">时间</th>
+                                    <th style="padding: 6px; text-align: right; border-bottom: 1px solid #333;">价格</th>
+                                    <th style="padding: 6px; text-align: center; border-bottom: 1px solid #333;">连续小时</th>
+                                    <th style="padding: 6px; text-align: right; border-bottom: 1px solid #333;">上轨</th>
+                                    <th style="padding: 6px; text-align: right; border-bottom: 1px solid #333;">中轨</th>
+                                    <th style="padding: 6px; text-align: left; border-bottom: 1px solid #333;">条件满足</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${data.signals.map((sig, i) => {
+                                    const conditions = sig.conditions_met || {};
+                                    const metList = Object.entries(conditions)
+                                        .map(([k, v]) => `<span style="color: ${v ? '#00ff88' : '#ff4757'};">${k}:${v ? '✓' : '✗'}</span>`)
+                                        .join(' ');
+                                    return `
+                                        <tr style="background: ${i % 2 === 0 ? '#1a1a2e' : '#16213e'};">
+                                            <td style="padding: 6px;">${sig.timestamp}</td>
+                                            <td style="padding: 6px; text-align: right; color: #00d4ff;">${sig.price.toFixed(4)}</td>
+                                            <td style="padding: 6px; text-align: center; color: #00ff88; font-weight: bold;">${sig.data?.consecutive_hours || 0}h</td>
+                                            <td style="padding: 6px; text-align: right;">${(sig.data?.upper || 0).toFixed(4)}</td>
+                                            <td style="padding: 6px; text-align: right;">${(sig.data?.middle || 0).toFixed(4)}</td>
+                                            <td style="padding: 6px; font-size: 10px;">${metList}</td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    `;
+                } else {
+                    signalsDiv.innerHTML = '<div style="color: #888; text-align: center; padding: 20px;">未检测到信号</div>';
+                }
+            })
+            .catch(err => {
+                summaryDiv.innerHTML = `<span style="color: #ff4757;">❌ 请求失败: ${err}</span>`;
+            });
+        }
+
+        // ========== 调试指定时间点 ==========
+        function debugTimestamp() {
+            const symbol = document.getElementById('debug_symbol').value.trim().toUpperCase();
+            const timestamp = document.getElementById('debug_timestamp').value.trim();
+
+            if (!symbol) {
+                alert('请输入币种');
+                return;
+            }
+            if (!timestamp) {
+                alert('请输入时间点');
+                return;
+            }
+
+            const resultDiv = document.getElementById('debug_result');
+            const summaryDiv = document.getElementById('debug_summary');
+            const conditionsDiv = document.getElementById('debug_conditions');
+
+            resultDiv.style.display = 'block';
+            summaryDiv.innerHTML = '<span style="color: #9b59b6;">⏳ 检查中...</span>';
+            conditionsDiv.innerHTML = '';
+
+            fetch('/api/backtest/debug', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    symbol: symbol,
+                    timestamp: timestamp
+                })
+            })
+            .then(r => r.json())
+            .then(res => {
+                if (res.code !== 0) {
+                    summaryDiv.innerHTML = `<span style="color: #ff4757;">❌ 错误: ${res.msg}</span>`;
+                    return;
+                }
+
+                const data = res.data;
+
+                if (data.error) {
+                    let errorHtml = `<span style="color: #ff4757;">❌ ${data.error}</span>`;
+                    
+                    if (data.data_info) {
+                        errorHtml += `<div style="margin-top: 8px; padding: 8px; background: rgba(255,71,87,0.1); border-radius: 4px; font-size: 11px;">`;
+                        errorHtml += `<div style="color: #888;">数据源: <span style="color: #00d4ff;">${data.data_info.data_source}</span></div>`;
+                        errorHtml += `<div style="color: #888;">当前K线数: <span style="color: #ff4757;">${data.data_info.available_klines}</span> / 需要: <span style="color: #00ff88;">${data.data_info.required_klines}</span></div>`;
+                        errorHtml += `</div>`;
+                    }
+                    
+                    if (data.suggestion) {
+                        errorHtml += `<div style="margin-top: 8px; color: #ffd93d; font-size: 11px;">💡 ${data.suggestion}</div>`;
+                    }
+                    
+                    summaryDiv.innerHTML = errorHtml;
+                    conditionsDiv.innerHTML = '';
+                    return;
+                }
+
+                const isSignal = data.is_signal;
+                const summaryColor = isSignal ? '#00ff88' : '#ff4757';
+                const summaryIcon = isSignal ? '✅' : '❌';
+
+                summaryDiv.innerHTML = `
+                    <span style="color: ${summaryColor};">${summaryIcon} ${data.summary}</span><br>
+                    <span style="color: #888;">币种: <span style="color: #00d4ff;">${data.symbol}</span> | 
+                    时间: ${data.timestamp} | 
+                    价格: <span style="color: #00d4ff;">${data.price}</span></span>
+                `;
+
+                const conditions = data.conditions || {};
+                let conditionsHtml = '<div style="margin-top: 10px;">';
+                conditionsHtml += '<table style="width: 100%; border-collapse: collapse;">';
+                conditionsHtml += '<tr style="background: #16213e;"><th style="padding: 4px 6px; text-align: left; border-bottom: 1px solid #333;">条件</th><th style="padding: 4px 6px; text-align: center; border-bottom: 1px solid #333;">结果</th><th style="padding: 4px 6px; text-align: left; border-bottom: 1px solid #333;">说明</th></tr>';
+
+                const condNames = {
+                    'price_above_middle': '价格 > 中轨',
+                    'price_near_upper': '价格在上轨附近',
+                    'volume_ratio': '量能放大',
+                    'hl_climb': 'HL抬高',
+                    'atr_filter': 'ATR过滤'
+                };
+
+                for (const [key, cond] of Object.entries(conditions)) {
+                    const passed = cond.passed;
+                    const icon = passed ? '<span style="color: #00ff88;">✓</span>' : '<span style="color: #ff4757;">✗</span>';
+                    const rowBg = passed ? '' : 'background: rgba(255,71,87,0.1);';
+                    const name = condNames[key] || key;
+
+                    conditionsHtml += `<tr style="${rowBg}">`;
+                    conditionsHtml += `<td style="padding: 4px 6px;">${name}</td>`;
+                    conditionsHtml += `<td style="padding: 4px 6px; text-align: center;">${icon}</td>`;
+                    conditionsHtml += `<td style="padding: 4px 6px; color: #888;">${cond.description || ''}</td>`;
+                    conditionsHtml += `</tr>`;
+                }
+
+                conditionsHtml += '</table>';
+
+                if (data.bb_data) {
+                    conditionsHtml += `
+                        <div style="margin-top: 10px; padding: 8px; background: #0a0a14; border-radius: 4px;">
+                            <span style="color: #666;">布林带: </span>
+                            <span style="color: #888;">上轨: <span style="color: #ff6b6b;">${data.bb_data.upper}</span> | </span>
+                            <span style="color: #888;">中轨: <span style="color: #ffd93d;">${data.bb_data.middle}</span> | </span>
+                            <span style="color: #888;">下轨: <span style="color: #6bcb77;">${data.bb_data.lower}</span></span>
+                            ${data.bb_data.atr ? `<span style="color: #888;"> | ATR: <span style="color: #4d96ff;">${data.bb_data.atr}</span></span>` : ''}
+                        </div>
+                    `;
+                }
+
+                conditionsHtml += '</div>';
+                conditionsDiv.innerHTML = conditionsHtml;
+            })
+            .catch(err => {
+                summaryDiv.innerHTML = `<span style="color: #ff4757;">❌ 请求失败: ${err}</span>`;
+            });
+        }
+
+        // V7 双账户实盘交易数据缓存
+        let simTradeCache = null;
+
+        // 用最新市场价格更新持仓盈亏（秒级实时）- V7双账户
+        function updateSimTradeRealtime() {
+            if (!simTradeCache) return;
+            
+            let changed = false;
+            
+            function updatePositions(positions) {
+                if (!positions || positions.length === 0) return 0;
+                let totalUnrealized = 0;
+                positions.forEach(pos => {
+                    const symbol = pos.symbol;
+                    const entryPrice = pos.entry_price || 0;
+                    const quantity = pos.quantity || 0;
+                    
+                    const info = allData[symbol];
+                    if (!info || !info.price) return;
+                    
+                    const currentPrice = info.price;
+                    if (currentPrice !== pos.current_price) {
+                        pos.current_price = currentPrice;
+                        changed = true;
+                    }
+                    
+                    if (currentPrice > 0 && entryPrice > 0) {
+                        pos.unrealized_pnl = (currentPrice - entryPrice) * quantity;
+                        pos.unrealized_pnl_pct = ((currentPrice - entryPrice) / entryPrice) * 100;
+                    }
+                    
+                    // 重新判断状态
+                    const tp = pos.tp_price || pos.take_profit_price || Infinity;
+                    const sl = pos.sl_price || pos.stop_loss_price || 0;
+                    const liq = pos.liquidation_price || 0;
+                    if (currentPrice >= tp) {
+                        pos.status = '止盈'; pos.status_color = 'profit';
+                    } else if (liq > 0 && currentPrice <= liq) {
+                        pos.status = '爆仓'; pos.status_color = 'liquidation';
+                    } else if (currentPrice <= sl) {
+                        pos.status = '止损'; pos.status_color = 'loss';
+                    } else {
+                        pos.status = '持仓中'; pos.status_color = 'hold';
+                    }
+                    
+                    totalUnrealized += pos.unrealized_pnl;
+                });
+                return totalUnrealized;
+            }
+            
+            // 更新现货持仓
+            const spotUnrealized = updatePositions(simTradeCache.spot_positions);
+            // 更新合约持仓
+            const futUnrealized = updatePositions(simTradeCache.futures_positions);
+            
+            if (changed && simTradeCache.summary) {
+                simTradeCache.summary.spot_unrealized_pnl = spotUnrealized;
+                simTradeCache.summary.futures_unrealized_pnl = futUnrealized;
+                simTradeCache.summary.total_unrealized_pnl = spotUnrealized + futUnrealized;
+                
+                const spotBalance = (simTradeCache.spot_account && simTradeCache.spot_account.balance) || 0;
+                const futBalance = (simTradeCache.futures_account && simTradeCache.futures_account.balance) || 0;
+                simTradeCache.summary.spot_effective_balance = spotBalance + spotUnrealized;
+                simTradeCache.summary.futures_effective_balance = futBalance + futUnrealized;
+                simTradeCache.summary.total_effective_balance = spotBalance + futBalance + spotUnrealized + futUnrealized;
+            }
+            
+            // 重新渲染（秒级刷新只更新数值）
+            renderSimTrade(simTradeCache, false);
+        }
+
+        // 渲染单个账户面板
+        // prefix: 'spot' 或 'futures'
+        function renderAccountPanel(account, positions, prefix, maxPos, expandedSet, fullRender) {
+            if (!account) {
+                // 旧格式兼容: 如果账户不存在，显示未启用
+                const wrap = document.getElementById(prefix + '_positions_wrap');
+                if (wrap && fullRender) wrap.innerHTML = '<div class="sim-empty">未启用</div>';
+                return;
+            }
+            
+            const balance = account.balance || 0;
+            const winRate = account.win_rate || 0;
+            const maxDd = account.max_drawdown || 0;
+            
+            let unrealizedPnl = 0;
+            positions.forEach(p => { unrealizedPnl += (p.unrealized_pnl || 0); });
+            const effectiveBalance = balance + unrealizedPnl;
+            const posCount = positions.length;
+            
+            // 更新统计数字
+            const elEquity = document.getElementById(prefix + '_equity');
+            const elBalance = document.getElementById(prefix + '_balance');
+            const elUnrealized = document.getElementById(prefix + '_unrealized');
+            const elWinRate = document.getElementById(prefix + '_win_rate');
+            const elMaxDd = document.getElementById(prefix + '_max_dd');
+            const elPosCount = document.getElementById(prefix + '_positions_count');
+            
+            if (elEquity) elEquity.textContent = effectiveBalance.toFixed(2) + ' USDT';
+            if (elBalance) elBalance.textContent = balance.toFixed(2) + ' USDT';
+            if (elUnrealized) {
+                elUnrealized.textContent = (unrealizedPnl >= 0 ? '+' : '') + unrealizedPnl.toFixed(2);
+                elUnrealized.className = 'value ' + (unrealizedPnl >= 0 ? 'up' : 'down');
+            }
+            if (elWinRate) elWinRate.textContent = winRate.toFixed(0) + '%';
+            if (elMaxDd) {
+                elMaxDd.textContent = maxDd.toFixed(1) + '%';
+                elMaxDd.className = 'value down';
+            }
+            if (elPosCount) elPosCount.textContent = posCount + '/' + maxPos;
+            
+            // 持仓表格
+            const wrap = document.getElementById(prefix + '_positions_wrap');
+            if (!wrap) return;
+            
+            if (positions.length === 0) {
+                if (fullRender) wrap.innerHTML = '<div class="sim-empty">暂无持仓</div>';
+                return;
+            }
+            
+            // 秒级更新只更新数值
+            const existingTable = wrap.querySelector('.sim-positions-table');
+            if (!fullRender && existingTable) {
+                positions.forEach((pos, idx) => {
+                    const row = existingTable.querySelector(`[data-idx="${prefix}_${idx}"]`);
+                    const detailRow = existingTable.querySelector(`[data-detail-idx="${prefix}_${idx}"]`);
+                    if (!row) return;
+                    
+                    const pnl = pos.unrealized_pnl || 0;
+                    const current = pos.current_price || pos.entry_price || 0;
+                    const pnlClass = pnl >= 0 ? 'pnl-up' : 'pnl-down';
+                    
+                    const tds = row.querySelectorAll('td');
+                    if (tds[1]) tds[1].textContent = (pos.entry_price || 0).toFixed(6);
+                    if (tds[2]) tds[2].textContent = current.toFixed(6);
+                    if (tds[3]) { tds[3].textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2); tds[3].className = pnlClass; }
+                    
+                    if (detailRow) {
+                        const status = pos.status || '持仓中';
+                        const statusColor = pos.status_color || 'hold';
+                        const pnlPct = pos.unrealized_pnl_pct || 0;
+                        const sigDetail = pos.signal_detail || {};
+                        const detailHtml = Object.entries(sigDetail).map(([k,v]) => k + '=' + v).join(', ');
+                        const tpPrice = pos.tp_price || pos.take_profit_price || 0;
+                        const slPrice = pos.sl_price || pos.stop_loss_price || 0;
+                        const liqPrice = pos.liquidation_price || 0;
+                        const margin = pos.margin || 0;
+                        const leverage = pos.leverage || 1;
+                        const posValue = pos.position_value || 0;
+                        
+                        detailRow.querySelector('td').innerHTML = `
+                            <span class="detail-item"><span class="detail-label">盈亏%:</span> <span class="detail-value ${pnlPct >= 0 ? 'pnl-up' : 'pnl-down'}">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span></span>
+                            <span class="detail-item"><span class="detail-label">策略依据:</span> <span class="detail-value">${detailHtml || '-'}</span></span>
+                            ${margin > 0 ? `<span class="detail-item"><span class="detail-label">保证金:</span> <span class="detail-value">${margin} USDT</span></span>` : ''}
+                            ${leverage > 1 ? `<span class="detail-item"><span class="detail-label">杠杆:</span> <span class="detail-value">${leverage}x</span></span>` : ''}
+                            <span class="detail-item"><span class="detail-label">状态:</span> <span class="detail-value status-${statusColor}">${status}</span></span>
+                            <span class="detail-item"><span class="detail-label">止损:</span> <span class="detail-value">${slPrice.toFixed(6)}</span></span>
+                            <span class="detail-item"><span class="detail-label">止盈:</span> <span class="detail-value">${tpPrice.toFixed(6)}</span></span>
+                            ${liqPrice > 0 ? `<span class="detail-item"><span class="detail-label">爆仓:</span> <span class="detail-value">${liqPrice.toFixed(6)}</span></span>` : ''}
+                            ${posValue > 0 ? `<span class="detail-item"><span class="detail-label">仓位价值:</span> <span class="detail-value">${posValue.toFixed(2)} USDT</span></span>` : ''}
+                            <span class="detail-item"><span class="detail-label">开仓时间:</span> <span class="detail-value">${pos.entry_time ? new Date(pos.entry_time * 1000).toLocaleString('zh-CN') : '-'}</span></span>
+                            <span class="detail-item"><span class="detail-label">数量:</span> <span class="detail-value">${(pos.quantity || 0).toFixed(4)}</span></span>
+                        `;
+                    }
+                });
+                return;
+            }
+            
+            // 完整重建表格
+            const rows = positions.map((pos, idx) => {
+                const pnl = pos.unrealized_pnl || 0;
+                const pnlPct = pos.unrealized_pnl_pct || 0;
+                const status = pos.status || '持仓中';
+                const statusClass = 'status-' + (pos.status_color || 'hold');
+                const pnlClass = pnl >= 0 ? 'pnl-up' : 'pnl-down';
+                const entry = pos.entry_price || 0;
+                const current = pos.current_price || entry;
+                const sig = pos.signal_type || '';
+                const toggleFn = prefix === 'spot' ? 'toggleSpotDetail' : 'toggleFuturesDetail';
+                
+                const sigDetail = pos.signal_detail || {};
+                const detailHtml = Object.entries(sigDetail).map(([k,v]) => k + '=' + v).join(', ');
+                const tpPrice = pos.tp_price || pos.take_profit_price || 0;
+                const slPrice = pos.sl_price || pos.stop_loss_price || 0;
+                const liqPrice = pos.liquidation_price || 0;
+                const margin = pos.margin || 0;
+                const leverage = pos.leverage || 1;
+                const posValue = pos.position_value || 0;
+                
+                return `
+                <tr data-idx="${prefix}_${idx}">
+                    <td>
+                        <span class="sim-expand-btn" onclick="${toggleFn}(${idx}, event)">▶</span>
+                        <span class="sym">${pos.symbol}</span><br><span class="sig">${sig}</span>
+                    </td>
+                    <td>${entry.toFixed(6)}</td>
+                    <td>${current.toFixed(6)}</td>
+                    <td class="${pnlClass}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</td>
+                </tr>
+                <tr class="sim-detail-row" data-detail-idx="${prefix}_${idx}">
+                    <td colspan="4">
+                        <span class="detail-item"><span class="detail-label">盈亏%:</span> <span class="detail-value ${pnlClass}">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</span></span>
+                        <span class="detail-item"><span class="detail-label">策略依据:</span> <span class="detail-value">${detailHtml || '-'}</span></span>
+                        ${margin > 0 ? `<span class="detail-item"><span class="detail-label">保证金:</span> <span class="detail-value">${margin} USDT</span></span>` : ''}
+                        ${leverage > 1 ? `<span class="detail-item"><span class="detail-label">杠杆:</span> <span class="detail-value">${leverage}x</span></span>` : ''}
+                        <span class="detail-item"><span class="detail-label">状态:</span> <span class="detail-value ${statusClass}">${status}</span></span>
+                        <span class="detail-item"><span class="detail-label">止损:</span> <span class="detail-value">${slPrice.toFixed(6)}</span></span>
+                        <span class="detail-item"><span class="detail-label">止盈:</span> <span class="detail-value">${tpPrice.toFixed(6)}</span></span>
+                        ${liqPrice > 0 ? `<span class="detail-item"><span class="detail-label">爆仓:</span> <span class="detail-value">${liqPrice.toFixed(6)}</span></span>` : ''}
+                        ${posValue > 0 ? `<span class="detail-item"><span class="detail-label">仓位价值:</span> <span class="detail-value">${posValue.toFixed(2)} USDT</span></span>` : ''}
+                        <span class="detail-item"><span class="detail-label">开仓时间:</span> <span class="detail-value">${pos.entry_time ? new Date(pos.entry_time * 1000).toLocaleString('zh-CN') : '-'}</span></span>
+                        <span class="detail-item"><span class="detail-label">数量:</span> <span class="detail-value">${(pos.quantity || 0).toFixed(4)}</span></span>
+                    </td>
+                </tr>`;
+            }).join('');
+            
+            wrap.innerHTML = `
+                <table class="sim-positions-table">
+                    <thead>
+                        <tr>
+                            <th>币种/信号</th>
+                            <th>开仓价</th>
+                            <th>当前价</th>
+                            <th>盈亏</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            `;
+            // 恢复展开的详情行
+            expandedSet.forEach(idx => {
+                const detailRow = wrap.querySelector(`[data-detail-idx="${prefix}_${idx}"]`);
+                const btn = wrap.querySelector(`[data-idx="${prefix}_${idx}"] .sim-expand-btn`);
+                if (detailRow) {
+                    detailRow.classList.add('show');
+                    if (btn) btn.textContent = '▼';
+                }
+            });
+        }
+
+        // 渲染V7双账户面板
+        function renderSimTrade(state) {
+            simTradeCache = state;
+            // 直接渲染，和CC锚一样的简单模式
+            renderAccountSimple('spot', state.spot_account, state.spot_positions || [], 20);
+            renderAccountSimple('futures', state.futures_account, state.futures_positions || [], 20);
+        }
+
+        function renderAccountSimple(prefix, account, positions, maxPos) {
+            const wrap = document.getElementById(prefix + '_positions_wrap');
+            const stats = document.getElementById(prefix + '_stats');
+            if (!wrap) return;
+            if (!account) { wrap.innerHTML = '<div class="sim-empty">未启用</div>'; return; }
+
+            const bal = account.balance || 0;
+            const wr = account.win_rate || 0;
+            const dd = account.max_drawdown || 0;
+            let unreal = 0;
+            positions.forEach(p => { unreal += (p.unrealized_pnl || 0); });
+            const eq = bal + unreal;
+
+            if (stats) {
+                stats.innerHTML =
+                    '<div class="sim-stat-item"><div class="label">权益</div><div class="value">'+eq.toFixed(2)+' USDT</div></div>'+
+                    '<div class="sim-stat-item"><div class="label">余额</div><div class="value">'+bal.toFixed(2)+' USDT</div></div>'+
+                    '<div class="sim-stat-item"><div class="label">未实现</div><div class="value" style="color:'+(unreal>=0?'#00ff88':'#ff4757')+'">'+(unreal>=0?'+':'')+unreal.toFixed(2)+'</div></div>'+
+                    '<div class="sim-stat-item"><div class="label">胜率</div><div class="value">'+wr.toFixed(0)+'%</div></div>'+
+                    '<div class="sim-stat-item"><div class="label">最大回撤</div><div class="value">'+dd.toFixed(1)+'%</div></div>'+
+                    '<div class="sim-stat-item"><div class="label">持仓</div><div class="value">'+positions.length+'/'+maxPos+'</div></div>';
+            }
+
+            if (positions.length === 0) {
+                wrap.innerHTML = '<div class="sim-empty">暂无持仓</div>';
+                return;
+            }
+            let html = '<table class="sim-positions-table"><thead><tr><th>币种</th><th>入场</th><th>现价</th><th>盈亏</th><th>TP</th><th>SL</th></tr></thead><tbody>';
+            positions.forEach(p => {
+                const pnl = p.unrealized_pnl || 0;
+                const pnlPct = p.entry_price > 0 ? ((p.current_price || p.entry_price) - p.entry_price) / p.entry_price * 100 : 0;
+                const cls = pnl >= 0 ? 'up' : 'down';
+                html += '<tr>'+
+                    '<td>'+p.symbol+'</td>'+
+                    '<td>'+p.entry_price.toFixed(6)+'</td>'+
+                    '<td>'+(p.current_price || p.entry_price).toFixed(6)+'</td>'+
+                    '<td class="'+cls+'">'+(pnl>=0?'+':'')+pnl.toFixed(4)+' ('+pnlPct.toFixed(1)+'%)</td>'+
+                    '<td>'+p.tp_price.toFixed(6)+'</td>'+
+                    '<td>'+p.sl_price.toFixed(6)+'</td>'+
+                    '</tr>';
+            });
+            html += '</tbody></table>';
+            wrap.innerHTML = html;
+        }
+
+        // 记录用户展开的详情行索引
+        const expandedSpotDetails = new Set();
+        const expandedFuturesDetails = new Set();
+
+        // 折叠/展开持仓详情 - 现货
+        window.toggleSpotDetail = function(idx, event) {
+            if (event) event.stopPropagation();
+            const wrap = document.getElementById('spot_positions_wrap');
+            if (!wrap) return;
+            const detailRow = wrap.querySelector(`[data-detail-idx="spot_${idx}"]`);
+            const btn = wrap.querySelector(`[data-idx="spot_${idx}"] .sim-expand-btn`);
+            if (!detailRow) return;
+            if (detailRow.classList.contains('show')) {
+                detailRow.classList.remove('show');
+                if (btn) btn.textContent = '▶';
+                expandedSpotDetails.delete(idx);
+            } else {
+                detailRow.classList.add('show');
+                if (btn) btn.textContent = '▼';
+                expandedSpotDetails.add(idx);
+            }
+        };
+
+        // 折叠/展开持仓详情 - 合约
+        window.toggleFuturesDetail = function(idx, event) {
+            if (event) event.stopPropagation();
+            const wrap = document.getElementById('futures_positions_wrap');
+            if (!wrap) return;
+            const detailRow = wrap.querySelector(`[data-detail-idx="futures_${idx}"]`);
+            const btn = wrap.querySelector(`[data-idx="futures_${idx}"] .sim-expand-btn`);
+            if (!detailRow) return;
+            if (detailRow.classList.contains('show')) {
+                detailRow.classList.remove('show');
+                if (btn) btn.textContent = '▶';
+                expandedFuturesDetails.delete(idx);
+            } else {
+                detailRow.classList.add('show');
+                if (btn) btn.textContent = '▼';
+                expandedFuturesDetails.add(idx);
+            }
+        };
+
+        // 每5秒轮询实盘交易数据（兜底WebSocket）
+        function pollSimTrade() {
+            fetch('/api/sim_trade')
+                .then(r => r.json())
+                .then(res => {
+                    if (res.code === 0 && res.data) {
+                        renderSimTrade(res.data);
+                        // 联动CC锚
+                        if (typeof loadCCAnchors === 'function') loadCCAnchors();
+                        // 标记JS在运行
+                        const el = document.getElementById('spot_equity');
+                        if (el && el.textContent === '-') el.textContent = '轮询中...';
+                    }
+                })
+                .catch(e => { console.error('pollSimTrade failed', e); });
+        }
+        setInterval(pollSimTrade, 5000);
+        setTimeout(pollSimTrade, 500);
+
+        // 设置默认时间（最近2天）
+        function setDefaultBacktestTime() {
+            const now = new Date();
+            const end = now.toISOString().slice(0, 16).replace('T', ' ');
+            const start = new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16).replace('T', ' ');
+            document.getElementById('backtest_start').value = start.slice(0, 10) + ' 00:00:00';
+            document.getElementById('backtest_end').value = end.slice(0, 10) + ' 00:00:00';
+        }
+        setDefaultBacktestTime();
+    </script>
+</body>
+</html>

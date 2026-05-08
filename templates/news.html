@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>币圈日报</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; padding: 12px; }
+h1 { font-size: 16px; color: #ff9500; margin-bottom: 4px; }
+.nav { margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+.nav a { color: #ff9500; text-decoration: none; font-size: 12px; padding: 4px 10px; border: 1px solid #ff9500; border-radius: 4px; }
+.nav a:hover { background: #ff9500; color: #0d1117; }
+.date { color: #8b949e; font-size: 12px; margin-bottom: 16px; }
+
+.section { margin-bottom: 20px; }
+.section h2 { font-size: 15px; color: #ff9500; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid #30363d; }
+.cat-title { font-size: 13px; color: #8b949e; margin: 8px 0 4px; }
+.news-item { display: flex; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid #21262d; cursor: pointer; font-size: 13px; }
+.news-item:hover { background: #161b22; }
+.news-item .dot { color: #ff9500; margin-right: 6px; flex-shrink: 0; }
+.news-item .coins { margin-left: 6px; flex-shrink: 0; }
+.news-item .coin-tag { font-size: 10px; background: #161b22; color: #ff9500; padding: 1px 6px; border-radius: 3px; border: 1px solid #30363d; margin-left: 3px; }
+
+.ask-box { margin-top: 4px; padding: 8px; background: #161b22; border-radius: 6px; display: none; }
+.ask-box.show { display: block; }
+.ask-box input { width: 100%; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 8px; border-radius: 4px; font-size: 13px; }
+.ask-box button { margin-top: 6px; background: #ff9500; color: #0d1117; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.answer { margin-top: 8px; padding: 10px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; font-size: 12px; line-height: 1.6; display: none; }
+.answer.show { display: block; }
+.answer p { margin: 4px 0; }
+.notepad-btn { position: fixed; bottom: 16px; right: 16px; width: 48px; height: 48px; background: #ff9500; color: #0d1117; border: none; border-radius: 50%; font-size: 22px; cursor: pointer; z-index: 999; box-shadow: 0 2px 8px rgba(255,149,0,0.3); }
+.notepad { position: fixed; bottom: 72px; right: 16px; width: calc(100vw - 32px); max-width: 420px; max-height: 70vh; background: #161b22; border: 1px solid #ff9500; border-radius: 8px; padding: 12px; z-index: 999; display: none; overflow-y: auto; }
+.notepad.show { display: block; }
+.notepad textarea, .notepad input { width: 100%; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 8px; border-radius: 4px; font-size: 13px; }
+.notepad textarea { height: 120px; resize: vertical; }
+.notepad .np-header { display: flex; justify-content: space-between; margin-bottom: 8px; color: #ff9500; font-size: 12px; }
+.notepad .np-header button { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 14px; }
+.note-list-item { padding: 8px; border-bottom: 1px solid #21262d; cursor: pointer; font-size: 12px; display: flex; justify-content: space-between; }
+.note-list-item:hover { background: #0d1117; }
+.note-list-item .del { color: #ff9500; cursor: pointer; padding: 0 4px; }
+.np-btn-row { display: flex; gap: 6px; margin-top: 6px; }
+.np-btn-row button { flex: 1; padding: 6px; border: 1px solid #30363d; border-radius: 4px; font-size: 12px; cursor: pointer; background: #0d1117; color: #c9d1d9; }
+.np-btn-row button.save { background: #ff9500; color: #0d1117; border-color: #ff9500; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>币圈日报</h1>
+<div style="display:flex;gap:8px;margin:8px 0;">
+    <input type="text" id="searchInput" placeholder="搜索历史新闻...（如：TON、ETF、SEC）" style="flex:1;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:6px 10px;border-radius:4px;font-size:12px;" onkeydown="if(event.key==='Enter')searchNews()">
+    <button onclick="searchNews()" style="background:#ff9500;color:#0d1117;border:none;padding:6px 12px;border-radius:4px;font-size:12px;cursor:pointer;font-weight:600;">搜索</button>
+</div>
+<div id="searchResults" style="display:none;margin-bottom:12px;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:10px;max-height:300px;overflow-y:auto;"></div>
+<div class="nav">
+    <a href="/">← 行情监控</a>
+</div>
+<div class="date" id="date">加载中...</div>
+<div id="content">加载中...</div>
+
+<script>
+fetch('/api/news').then(r=>r.json()).then(d=>{
+    if(d.code!==0){document.getElementById('content').innerHTML='<p style="color:#8b949e;">无日报数据</p>';return;}
+    const sections=d.data;
+    document.getElementById('date').textContent='数据更新: '+new Date(d.updated*1000).toLocaleString('zh-CN');
+
+    let html='';
+    sections.forEach(sec=>{
+        html+='<div class="section"><h2>'+sec.name+'</h2>';
+        if(sec.categories&&sec.categories.length>0){
+            sec.categories.forEach(cat=>{
+                html+='<div class="cat-title">'+cat.icon+' '+cat.name+'</div>';
+                cat.items.forEach((item,i)=>{
+                    const itemId=sec.name.replace(/[^a-zA-Z一-龥]/g,'')+'_'+cat.name.replace(/[^a-zA-Z一-龥]/g,'')+'_'+i;
+                    html+='<div class="news-item" onclick="toggleAsk(\''+itemId+'\')">'+
+                        '<span class="dot">•</span>'+
+                        '<span>'+item.title+'</span>'+
+                        (item.coins&&item.coins.length>0?'<span class="coins">'+item.coins.map(c=>'<span class="coin-tag">'+c+'</span>').join('')+'</span>':'')+
+                        '</div>'+
+                        '<div class="ask-box" id="box_'+itemId+'">'+
+                        '<input type="text" id="inp_'+itemId+'" placeholder="输入你想了解的问题..." onkeydown="if(event.key===\'Enter\')askAI(\''+itemId+'\')">'+
+                        '<button onclick="event.stopPropagation();askAI(\''+itemId+'\')">提问</button>'+
+                        '<div class="answer" id="ans_'+itemId+'"></div>'+
+                        '</div>';
+                });
+            });
+        }
+        if(sec.items&&sec.items.length>0){
+            sec.items.forEach((item,i)=>{
+                const itemId=sec.name.replace(/[^a-zA-Z一-龥]/g,'')+'_item_'+i;
+                html+='<div class="news-item" onclick="toggleAsk(\''+itemId+'\')">'+
+                    '<span class="dot">•</span><span>'+item.title+'</span>'+
+                    (item.coins&&item.coins.length>0?'<span class="coins">'+item.coins.map(c=>'<span class="coin-tag">'+c+'</span>').join('')+'</span>':'')+
+                    '</div>'+
+                    '<div class="ask-box" id="box_'+itemId+'">'+
+                    '<input type="text" id="inp_'+itemId+'" placeholder="输入你想了解的问题..." onkeydown="if(event.key===\'Enter\')askAI(\''+itemId+'\')">'+
+                    '<button onclick="event.stopPropagation();askAI(\''+itemId+'\')">提问</button>'+
+                    '<div class="answer" id="ans_'+itemId+'"></div>'+
+                    '</div>';
+            });
+        }
+        html+='</div>';
+    });
+    document.getElementById('content').innerHTML=html;
+}).catch(()=>{document.getElementById('content').innerHTML='<p style="color:#8b949e;">加载失败</p>';});
+
+let _lastOpen=null;
+function toggleAsk(id){
+    const box=document.getElementById('box_'+id);
+    if(_lastOpen&&_lastOpen!==id) document.getElementById('box_'+_lastOpen).classList.remove('show');
+    box.classList.toggle('show');
+    if(box.classList.contains('show')){_lastOpen=id;document.getElementById('inp_'+id).focus();}
+    else _lastOpen=null;
+}
+
+const _chatHistory = {};  // {itemId: [{q, a}, ...]}
+
+function askAI(id){
+    const inp=document.getElementById('inp_'+id);
+    const ans=document.getElementById('ans_'+id);
+    const q=inp.value.trim();
+    if(!q)return;
+    const box=document.getElementById('box_'+id);
+    const newsItem=box.previousElementSibling;
+    const title=newsItem?newsItem.textContent.replace(/^[•📰]\s*/,'').trim():'';
+
+    if(!_chatHistory[id]) _chatHistory[id]=[];
+    const history=_chatHistory[id];
+    ans.classList.add('show');
+    ans.innerHTML='<p style="color:#8b949e;">已提交，后台分析中...<br><small>可关闭页面，稍后回来查看</small></p>';
+    inp.value='';
+
+    fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({title:title, question:q, history:history.slice(-6)})})
+        .then(r=>r.json()).then(d=>{
+            if(d.status==='running'){
+                // 异步轮询
+                history.push({q:q, a:'__PENDING__', task_id:d.task_id});
+                localStorage.setItem('news_chat',JSON.stringify(_chatHistory));
+                pollTask(d.task_id, id, ans, history);
+            }else if(d.code===0&&d.answer){
+                history.push({q:q, a:d.answer});saveNewsChat();
+                renderHistory(ans, history);
+            }else ans.innerHTML='<p style="color:#ff9500;">失败: '+(d.msg||'')+'</p>';
+        }).catch(e=>{ans.innerHTML='<p style="color:#ff9500;">错误:'+e.message+'</p>';});
+}
+
+function pollTask(taskId, id, ans, history){
+    const check=()=>{
+        fetch('/api/ask/status?id='+taskId).then(r=>r.json()).then(d=>{
+            if(d.status==='done'){
+                const h=history.find(x=>x.task_id===taskId);
+                if(h){h.a=d.answer;delete h.task_id;}
+                saveNewsChat();renderHistory(ans, history);
+            }else if(d.status==='error'){
+                const h=history.find(x=>x.task_id===taskId);
+                if(h){h.a='[分析失败: '+d.msg+']';delete h.task_id;}
+                saveNewsChat();renderHistory(ans, history);
+            }else{setTimeout(check,3000);}
+        }).catch(()=>{setTimeout(check,5000);});
+    };
+    setTimeout(check,2000);
+}
+
+function renderHistory(ans, history){
+    let html='';
+    history.forEach(h=>{
+        if(h.a==='__PENDING__') html+='<p style="color:#8b949e;font-size:11px;">Q: '+h.q+'</p><p style="color:#8b949e;">⏳ 分析中...</p><hr style="border-color:#30363d;">';
+        else html+='<p style="color:#8b949e;font-size:11px;">Q: '+h.q+'</p><p>'+h.a.replace(/\n/g,'<br>')+'</p><hr style="border-color:#30363d;">';
+    });
+    ans.innerHTML=html;
+}
+
+function saveNewsChat(){localStorage.setItem('news_chat',JSON.stringify(_chatHistory));}
+// 页面加载时恢复未完成任务
+setTimeout(()=>{for(let id in _chatHistory){_chatHistory[id].forEach(h=>{if(h.task_id)pollTask(h.task_id,id,document.getElementById('ans_'+id),_chatHistory[id]);});}},500);
+</script>
+<button class="notepad-btn" onclick="toggleNotepad()" title="备忘录">📝</button>
+<div class="notepad" id="notepad">
+    <div class="np-header">
+        <span>📝 交易笔记</span>
+        <div>
+            <button onclick="showNoteList()" title="列表">☰</button>
+            <button onclick="toggleNotepad()">✕</button>
+        </div>
+    </div>
+    <div id="noteListView"></div>
+    <div id="noteEditor" style="display:none;">
+        <input type="text" id="noteTitle" placeholder="标题（可选）" style="margin-bottom:6px;">
+        <textarea id="noteContent" placeholder="笔记内容..."></textarea>
+        <div class="np-btn-row">
+            <button onclick="showNoteList()">取消</button>
+            <button class="save" onclick="saveCurrentNote()">保存</button>
+        </div>
+    </div>
+</div>
+<script>
+let _notes=[], _editingId=null;
+
+function toggleNotepad(){ document.getElementById('notepad').classList.toggle('show'); if(document.getElementById('notepad').classList.contains('show'))loadNotes(); }
+
+function loadNotes(){
+    fetch('/api/notes').then(r=>r.json()).then(d=>{_notes=d.notes||[];renderNoteList();}).catch(()=>{});
+}
+
+function renderNoteList(){
+    const v=document.getElementById('noteListView');
+    if(_notes.length===0){v.innerHTML='<div style=\"color:#8b949e;font-size:12px;padding:12px;text-align:center;\">暂无笔记，点击"新建"</div>';}
+    else v.innerHTML=_notes.map((n,i)=>{
+        const d=new Date(n.updated_at*1000).toLocaleString('zh-CN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+        return '<div class=\"note-list-item\" onclick=\"editNote(\''+n.id+'\')\"><div><div style=\"color:#c9d1d9;\">'+n.title+'</div><div style=\"color:#8b949e;font-size:10px;\">'+d+'</div></div><span class=\"del\" onclick=\"event.stopPropagation();deleteNote(\''+n.id+'\')\">✕</span></div>';
+    }).join('');
+    v.innerHTML+='<div class=\"np-btn-row\" style=\"margin-top:8px;\"><button class=\"save\" onclick=\"newNote()\">+ 新建笔记</button></div>';
+    v.style.display='block';
+    document.getElementById('noteEditor').style.display='none';
+}
+
+function newNote(){_editingId=null;document.getElementById('noteTitle').value='';document.getElementById('noteContent').value='';document.getElementById('noteListView').style.display='none';document.getElementById('noteEditor').style.display='block';}
+
+function editNote(id){
+    const n=_notes.find(x=>x.id===id);if(!n)return;
+    _editingId=id;document.getElementById('noteTitle').value=n.title||'';document.getElementById('noteContent').value=n.content||'';
+    document.getElementById('noteListView').style.display='none';document.getElementById('noteEditor').style.display='block';
+}
+
+function showNoteList(){document.getElementById('noteListView').style.display='block';document.getElementById('noteEditor').style.display='none';}
+
+function saveCurrentNote(){
+    const title=document.getElementById('noteTitle').value.trim();
+    const content=document.getElementById('noteContent').value.trim();
+    if(!content)return;
+    fetch('/api/notes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:_editingId,title:title,content:content})})
+        .then(r=>r.json()).then(d=>{_notes=d.notes||[];renderNoteList();}).catch(()=>{});
+}
+
+function deleteNote(id){
+    if(!confirm('删除这条笔记？'))return;
+    fetch('/api/notes?id='+id,{method:'DELETE'}).then(()=>loadNotes()).catch(()=>{});
+}
+
+loadNotes();
+
+function searchNews(){
+    const q=document.getElementById('searchInput').value.trim();
+    if(!q)return;
+    const r=document.getElementById('searchResults');
+    r.style.display='block';
+    r.innerHTML='<p style="color:#8b949e;">搜索中...</p>';
+    fetch('/api/news/search?q='+encodeURIComponent(q)).then(res=>res.json()).then(d=>{
+        if(!d.data||d.data.length===0){r.innerHTML='<p style="color:#8b949e;">无结果</p>';return;}
+        r.innerHTML='<div style="color:#ff9500;font-size:12px;margin-bottom:6px;">找到 '+d.count+' 条</div>'+
+            d.data.map(item=>'<div style="padding:4px 0;border-bottom:1px solid #21262d;font-size:12px;"><span style="color:#8b949e;">'+item.date+'</span> '+item.text+'</div>').join('');
+    }).catch(()=>{r.innerHTML='<p style="color:#ff9500;">搜索失败</p>';});
+}
+</script>
+</body>
+</html>
